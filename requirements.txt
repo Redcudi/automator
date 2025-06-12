@@ -1,3 +1,6 @@
 fastapi
 uvicorn
 python-multipart
+whisper
+yt-dlp
+ffmpeg-python
