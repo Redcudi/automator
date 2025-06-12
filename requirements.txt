@@ -1,6 +1,6 @@
 fastapi
 uvicorn
 python-multipart
+openai-whisper
 yt-dlp
 ffmpeg-python
-openai-whisper
