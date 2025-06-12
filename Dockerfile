@@ -19,7 +19,7 @@ import whisper
 whisper.load_model("tiny")
 EOF
 
-# 4) Copia el resto del código
+# 4) Copia el resto del códigow
 COPY . .
 
 EXPOSE 8000
