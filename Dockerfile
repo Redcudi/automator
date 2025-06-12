@@ -1,7 +1,4 @@
-# Usa una imagen oficial de Python slim
 FROM python:3.11-slim
-
-# Evita prompts interactivos durante apt-get
 ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
@@ -11,7 +8,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
-# 2) Copia y instala dependencias de Python
+# 2) Copia e instala dependencias de Python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --upgrade yt-dlp
