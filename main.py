@@ -48,7 +48,6 @@ async def transcribe_video(url: str = Form(...)):
                     "preferredquality": "192",
                 }
             ],
-            "download_sections": ["*00:00:00-00:00:30"],
             "quiet": True
         }
 
