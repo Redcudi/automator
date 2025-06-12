@@ -48,6 +48,7 @@ async def transcribe_video(url: str = Form(...)):
                     "preferredquality": "192",
                 }
             ],
+            "keepvideo": False,
             "quiet": True
         }
 
