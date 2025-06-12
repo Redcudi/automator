@@ -7,7 +7,6 @@ import os
 
 app = FastAPI()
 
-# Configurar CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,7 +15,6 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-# Cargar modelo Whisper
 model = WhisperModel("tiny", compute_type="int8", cpu_threads=4)
 
 @app.get("/")
@@ -26,10 +24,12 @@ def root():
 @app.post("/transcribe")
 async def transcribe_video(url: str = Form(...)):
     try:
-        filename = f"{uuid.uuid4()}.mp3"
+        base_id = str(uuid.uuid4())
+        output_template = f"{base_id}.%(ext)s"
+
         ydl_opts = {
             "format": "bestaudio/best",
-            "outtmpl": filename,
+            "outtmpl": output_template,
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -38,21 +38,24 @@ async def transcribe_video(url: str = Form(...)):
                 }
             ],
             "download_sections": ["*00:00:00-00:00:30"],
-            "quiet": False,
-            "verbose": True,
-            "no_warnings": True,
+            "quiet": True
         }
 
-        print(f"📥 Recibiendo: {url}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        print(f"🧠 Transcribiendo archivo: {filename}")
-        segments, _ = model.transcribe(filename, beam_size=5)
+        print("📁 Archivos en el directorio actual:")
+        print(os.listdir("."))
+
+        mp3_filename = f"{base_id}.mp3"
+        if not os.path.isfile(mp3_filename):
+            return {"error": "No se generó el archivo MP3", "files": os.listdir(".")}
+
+        segments, _ = model.transcribe(mp3_filename, beam_size=5)
 
         transcription = " ".join([segment.text for segment in segments])
+        os.remove(mp3_filename)
 
-        # os.remove(filename)  # 🔁 Temporalmente desactivado para debug
         return {"transcription": transcription.strip()}
 
     except Exception as e:
