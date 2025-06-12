@@ -7,7 +7,7 @@ import os
 
 app = FastAPI()
 
-# Habilitar CORS (opcional si usas frontend)
+# Configurar CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,7 +16,7 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-# Cargar el modelo (puedes cambiar 'tiny' por 'base' o 'small' para más precisión)
+# Cargar modelo Whisper
 model = WhisperModel("tiny", compute_type="int8", cpu_threads=4)
 
 @app.get("/")
@@ -37,19 +37,17 @@ async def transcribe_video(url: str = Form(...)):
                     "preferredquality": "192",
                 }
             ],
-            "download_sections": ["*00:00:00-00:00:30"],  # Puedes aumentar el rango si deseas
             "quiet": True,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            info = ydl.extract_info(url, download=True)
 
-        # Verifica que el archivo se descargó correctamente
+        # Verifica que el archivo se haya creado
         if not os.path.exists(filename):
             return {"error": "El archivo de audio no se generó"}
 
         segments, _ = model.transcribe(filename, beam_size=5)
-
         transcription = " ".join([segment.text for segment in segments])
         os.remove(filename)
 
