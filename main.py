@@ -8,10 +8,7 @@ import logging
 
 app = FastAPI()
 
-# Logging
-logging.basicConfig(level=logging.INFO)
-
-# CORS
+# Configurar CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,7 +17,10 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-# Cargar modelo Whisper
+# Logger para debug
+logging.basicConfig(level=logging.INFO)
+
+# Cargar modelo
 model = WhisperModel("tiny", compute_type="int8", cpu_threads=4)
 
 @app.get("/")
@@ -30,13 +30,17 @@ def root():
 @app.post("/transcribe")
 async def transcribe_video(url: str = Form(...)):
     try:
-        filename = f"{uuid.uuid4()}.mp3"
         logging.info(f"📥 Recibido: {url}")
+
+        # Generar nombre sin extensión
+        basename = str(uuid.uuid4())
+        filename = f"{basename}.mp3"
+
         logging.info(f"🎯 Guardar como: {filename}")
 
         ydl_opts = {
             "format": "bestaudio/best",
-            "outtmpl": filename,
+            "outtmpl": basename,  # sin extensión
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -44,8 +48,8 @@ async def transcribe_video(url: str = Form(...)):
                     "preferredquality": "192",
                 }
             ],
-            "quiet": False,
-            "noplaylist": True,
+            "download_sections": ["*00:00:00-00:00:30"],
+            "quiet": True
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -55,9 +59,7 @@ async def transcribe_video(url: str = Form(...)):
             logging.error("❌ No se generó el archivo .mp3")
             return {"error": "El archivo de audio no se generó"}
 
-        logging.info(f"✅ Archivo encontrado: {filename}")
-        logging.info(f"📁 Archivos en el directorio actual:\n{os.listdir()}")
-
+        # Transcribir
         segments, _ = model.transcribe(filename, beam_size=5)
         transcription = " ".join([segment.text for segment in segments])
         os.remove(filename)
@@ -65,5 +67,5 @@ async def transcribe_video(url: str = Form(...)):
         return {"transcription": transcription.strip()}
 
     except Exception as e:
-        logging.exception("❌ Excepción al procesar")
+        logging.error(f"❌ Error durante la transcripción: {e}")
         return {"error": "No se pudo transcribir", "detail": str(e)}
