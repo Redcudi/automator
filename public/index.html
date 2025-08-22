@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>CreatorHoop — Espía & Creativo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg"></div>
+  <main class="container">
+    <header class="topbar">
+      <h1>CreatorHoop</h1>
+      <p class="subtitle">Modo Recopilador • Modo Creativo</p>
+    </header>
+
+    <section class="panel glass">
+      <div class="tabs">
+        <button class="tab active" data-mode="collector">Recopilador</button>
+        <button class="tab" data-mode="creative">Creativo</button>
+      </div>
+
+      <form id="controlForm">
+        <div class="field single-link">
+          <label>Transcribir un video por link</label>
+          <div class="row">
+            <input id="singleUrl" type="url" placeholder="Pega aquí el link directo al reel/video" />
+            <button type="button" class="btn ghost" id="singleBtn">Transcribir</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label>Rango de fechas</label>
+            <select id="window">
+              <option value="7d">Última semana</option>
+              <option value="21d" selected>Últimas 3 semanas</option>
+              <option value="60d">Últimos 2 meses</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Número de guiones</label>
+            <select id="numScripts">
+              <option>1</option>
+              <option>2</option>
+              <option selected>3</option>
+              <option>4</option>
+              <option>5</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Perfiles a analizar (3)</label>
+          <div class="links">
+            <input type="url" placeholder="https://instagram.com/handle o https://www.tiktok.com/@handle" class="link" required/>
+            <input type="url" placeholder="https://instagram.com/handle o https://www.tiktok.com/@handle" class="link" required/>
+            <input type="url" placeholder="https://instagram.com/handle o https://www.tiktok.com/@handle" class="link" required/>
+          </div>
+        </div>
+
+        <div id="creativeFields" class="creative hidden">
+          <div class="field">
+            <label>Describe tu nicho/producto/problema</label>
+            <textarea id="niche" rows="3" placeholder="Ej: Ayudo a creadores a editar videos con CapCut..."></textarea>
+          </div>
+          <div class="field">
+            <label>Reglas/tono del contenido</label>
+            <textarea id="rules" rows="3" placeholder="Tono directo; hook <3s; CTA a DM con 'EDITAR'; evitar tecnicismos..."></textarea>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="submit" class="btn primary" id="runBtn">Analizar perfiles</button>
+          <button type="button" class="btn ghost" id="clearBtn">Limpiar</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="results glass">
+      <div class="results-head">
+        <h2>Guiones</h2>
+        <div id="jobStatus" class="status">Listo</div>
+      </div>
+      <div id="cards" class="cards"></div>
+    </section>
+  </main>
+
+  <template id="cardTemplate">
+    <article class="card">
+      <div class="metrics">
+        <span class="badge">👁 <b class="v">0</b></span>
+        <span class="badge">❤️ <b class="l">0</b></span>
+        <span class="badge">💬 <b class="c">0</b></span>
+        <span class="badge">⭐ <b class="s">0</b></span>
+      </div>
+      <h3 class="title">Script</h3>
+      <pre class="script"></pre>
+      <div class="card-actions">
+        <a class="link" target="_blank" rel="noopener">Ver post</a>
+        <button class="copy">Copiar</button>
+      </div>
+    </article>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>

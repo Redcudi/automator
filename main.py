@@ -1,71 +1,44 @@
-from fastapi import FastAPI, Form
-from fastapi.middleware.cors import CORSMiddleware
-from faster_whisper import WhisperModel
-import yt_dlp
-import uuid
-import os
-import logging
 
-app = FastAPI()
+import os, tempfile, subprocess
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, HttpUrl
+from typing import Optional, List
 
-# Configurar CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-    allow_credentials=True,
-)
+try:
+    from faster_whisper import WhisperModel
+    HAVE_WHISPER = True
+except Exception:
+    HAVE_WHISPER = False
 
-# Logger para debug
-logging.basicConfig(level=logging.INFO)
+app = FastAPI(title="CreatorHoop")
 
-# Cargar modelo
-model = WhisperModel("tiny", compute_type="int8", cpu_threads=4)
+PUBLIC_DIR = os.path.join(os.path.dirname(__file__), "public")
+if os.path.isdir(PUBLIC_DIR):
+    app.mount("/public", StaticFiles(directory=PUBLIC_DIR), name="public")
 
 @app.get("/")
-def root():
-    return {"message": "API activa con Faster-Whisper"}
+def home():
+    idx = os.path.join(PUBLIC_DIR, "index.html")
+    if os.path.exists(idx):
+        return FileResponse(idx)
+    return {"ok": True, "msg": "UI not found, but API is running."}
+
+class TranscribeReq(BaseModel):
+    url: HttpUrl
 
 @app.post("/transcribe")
-async def transcribe_video(url: str = Form(...)):
-    try:
-        logging.info(f"📥 Recibido: {url}")
+def transcribe(req: TranscribeReq):
+    # Minimal fake response to prove UI wiring works.
+    return {
+        "items": [{
+            "url": str(req.url),
+            "metrics": {"views": 5300, "likes": 310, "comments": 25, "score": 84.3},
+            "script": "Ejemplo de transcripción (conecta tu ASR para texto real). Hook <3s... Desarrollo... CTA..."
+        }]
+    }
 
-        # Generar nombre sin extensión
-        basename = str(uuid.uuid4())
-        filename = f"{basename}.mp3"
-
-        logging.info(f"🎯 Guardar como: {filename}")
-
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": basename,  # sin extensión
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }
-            ],
-            "keepvideo": False,
-            "quiet": True
-        }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        if not os.path.exists(filename):
-            logging.error("❌ No se generó el archivo .mp3")
-            return {"error": "El archivo de audio no se generó"}
-
-        # Transcribir
-        segments, _ = model.transcribe(filename, beam_size=5)
-        transcription = " ".join([segment.text for segment in segments])
-        os.remove(filename)
-
-        return {"transcription": transcription.strip()}
-
-    except Exception as e:
-        logging.error(f"❌ Error durante la transcripción: {e}")
-        return {"error": "No se pudo transcribir", "detail": str(e)}
+@app.get("/health")
+def health():
+    return {"status": "ok"}
