@@ -4,4 +4,5 @@ yt-dlp
 faster-whisper
 ffmpeg-python
 python-multipart
+python-dotenv
 requests
