@@ -2,16 +2,69 @@ import os, sys, tempfile, subprocess, re
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, HttpUrl
 from dotenv import load_dotenv
 import json, time, urllib.parse, requests
-import re as _re
+load_dotenv()
 
+# CORS (allow WP/Railway embeds)
+CORS_ALLOW_ORIGINS = os.getenv("CORS_ALLOW_ORIGINS", "*")
+# Comma-separated list, e.g. "https://creatorhoop.com,https://*.creatorhoop.com,https://automator-production-82f2.up.railway.app"
+origins = [o.strip() for o in CORS_ALLOW_ORIGINS.split(',') if o.strip()] or ["*"]
 
 app = FastAPI(title="CreatorHoop")
-load_dotenv()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+import re as _re
+
+# ---------- GUIDEON (Claude) settings & prompt cache ----------
+CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "").strip()
+# For your request, default to the Haiku model
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-haiku-20240307").strip()
+GUIDEON_LANG_DEFAULT = os.getenv("GUIDEON_LANG", "es").strip()
+GUIDEON_MAX_TOKENS = int(os.getenv("GUIDEON_MAX_TOKENS", "1400"))
+GUIDEON_TEMP = float(os.getenv("GUIDEON_TEMP", "0.5"))
+
+
+_PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
+_PROMPT_CACHE: Dict[str, str] = {}
+
+def _load_prompt(name: str) -> str:
+    """
+    Carga y cachea un prompt desde /prompts.
+    Nombres esperados:
+      - 'guionista' -> prompts/guionista (o .txt)
+      - 'sencilla'  -> prompts/sencilla
+      - 'reglas_del_usuario' -> prompts/reglas_del_usuario
+    """
+    key = name.strip().lower()
+    if key in _PROMPT_CACHE:
+        return _PROMPT_CACHE[key]
+    # intenta con y sin .txt
+    candidates = [
+        os.path.join(_PROMPTS_DIR, key),
+        os.path.join(_PROMPTS_DIR, f"{key}.txt"),
+    ]
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                _PROMPT_CACHE[key] = f.read().strip()
+                return _PROMPT_CACHE[key]
+        except Exception:
+            continue
+    _PROMPT_CACHE[key] = ""
+    return ""
+
+
 
 # ---- Apify configuration flags ----
 APIFY_IG_ACTOR = os.getenv("APIFY_IG_ACTOR", "apify~instagram-scraper")
@@ -51,9 +104,23 @@ class JobReq(BaseModel):
     window: str  # "7d" | "21d" | "60d"
     num_scripts: int
     creative: Optional[Dict[str, Any]] = None
+    # nuevos campos para ordenamiento
+    sort_by: Optional[str] = "score"   # "score" | "views" | "likes" | "comments"
+    order: Optional[str] = "desc"      # "asc" | "desc"
 
 class TranscribeReq(BaseModel):
     url: HttpUrl
+
+# --- Inserted: RewriteReq model for per-card rewrites ---
+class RewriteReq(BaseModel):
+    script: str
+    user_prompt: str
+    mode: Optional[str] = None
+    niche_prompt: Optional[str] = ""
+    adaptation_level: Optional[str] = "completa"  # 'simple' | 'completa'
+    rules_source: Optional[str] = "guideon"       # 'guideon' | 'custom'
+    custom_rules: Optional[str] = ""
+    lang: Optional[str] = None
 
 # ---------- Data types ----------
 Post = Dict[str, Any]  # {platform_post_id, url, posted_at, views, likes, comments, duration_sec}
@@ -354,6 +421,15 @@ def fetch_instagram_posts_apify(profile_url: str, start: datetime, end: datetime
         comments = it.get("commentsCount") or it.get("comments") or 0
         duration = it.get("videoDuration") or it.get("duration") or 0
 
+        # NEW: intento de URL directa del video desde el actor
+        media_url = (
+            it.get("videoUrl")
+            or it.get("video_url")
+            or (it.get("media") or {}).get("videoUrl")
+            or it.get("videoUrlHd")
+            or ""
+        )
+
         posts.append({
             "platform_post_id": str(it.get("id") or it.get("shortCode") or url),
             "url": str(url),
@@ -362,6 +438,7 @@ def fetch_instagram_posts_apify(profile_url: str, start: datetime, end: datetime
             "likes": int(likes) if likes else 0,
             "comments": int(comments) if comments else 0,
             "duration_sec": int(duration) if duration else 0,
+            "media_url": str(media_url) if media_url else ""
         })
     return posts
 
@@ -437,13 +514,13 @@ def fetch_tiktok_posts_apify(profile_url: str, start: datetime, end: datetime, l
             continue
 
         url = (
-    it.get("url")
-    or it.get("webVideoUrl")
-    or it.get("shareUrl")
-    or it.get("webpageUrl")
-    or it.get("playableUrl")
-    or ""
-)
+            it.get("url")
+            or it.get("webVideoUrl")
+            or it.get("shareUrl")
+            or it.get("webpageUrl")
+            or it.get("playableUrl")
+            or ""
+        )
         stats = it.get("stats") or {}
         views = it.get("playCount") or stats.get("playCount") or 0
         likes = it.get("diggCount") or stats.get("diggCount") or 0
@@ -467,6 +544,13 @@ def fetch_tiktok_posts_apify(profile_url: str, start: datetime, end: datetime, l
             if not duration:
                 duration = 10
 
+        media_url = (
+            (it.get("video") or {}).get("downloadAddr")
+            or (it.get("video") or {}).get("playAddr")
+            or it.get("playableUrl")
+            or ""
+        )
+
         posts.append({
             "platform_post_id": str(it.get("id") or url),
             "url": str(url),
@@ -475,6 +559,7 @@ def fetch_tiktok_posts_apify(profile_url: str, start: datetime, end: datetime, l
             "likes": int(likes) if likes else 0,
             "comments": int(comments) if comments else 0,
             "duration_sec": int(duration) if duration else 0,
+            "media_url": str(media_url) if media_url else ""
         })
 
     return posts
@@ -693,27 +778,47 @@ def filter_by_window(posts: List[Post], start: datetime, end: datetime) -> List[
             keep.append(p)
     return keep
 
-def select_top_posts(all_posts: List[Post], num_scripts: int) -> List[Post]:
-    baseline = compute_baseline(all_posts)
+def select_top_posts(all_posts: List[Post], num_scripts: int, sort_by: str = "score", order: str = "desc") -> List[Post]:
+    sort_by = (sort_by or "score").lower()
+    order = (order or "desc").lower()
+    reverse = (order != "asc")
+
+    # Precalcula score si hace falta
     ranked = []
-    for p in all_posts:
-        s = score_post(p, baseline)
-        q = p.copy()
-        q["score"] = s
-        ranked.append(q)
-    ranked.sort(key=lambda x: (x.get("score", 0), x.get("views", 0)), reverse=True)
+    if sort_by == "score":
+        baseline = compute_baseline(all_posts)
+        for p in all_posts:
+            q = p.copy()
+            q["score"] = score_post(p, baseline)
+            ranked.append(q)
+    else:
+        for p in all_posts:
+            # asegura que exista una key de score por compatibilidad de UI
+            q = p.copy()
+            q.setdefault("score", 0.0)
+            ranked.append(q)
+
+    # Clave de ordenamiento
+    if sort_by in ("views", "likes", "comments", "score"):
+        keyfn = lambda x: (x.get(sort_by) or 0)
+    else:
+        # default a score
+        keyfn = lambda x: (x.get("score") or 0)
+
+    ranked.sort(key=keyfn, reverse=reverse)
+
+    # Fallbacks si quedara vacía la lista
     if not ranked:
-            # Fallback 1: sin vistas, ordena por interacciones
-            tmp = []
-            for p in all_posts:
-                q = p.copy()
-                q["score"] = (int(p.get("likes") or 0) + int(p.get("comments") or 0))
-                tmp.append(q)
-            tmp.sort(key=lambda x: (x.get("score", 0), x.get("likes", 0)), reverse=True)
-            if tmp:
-                return tmp[: max(1, min(num_scripts, 5))]
-            # Fallback 2: devuelve los primeros N tal cual
-            return all_posts[: max(1, min(num_scripts, 5))]
+        tmp = []
+        for p in all_posts:
+            q = p.copy()
+            q["score"] = (int(p.get("likes") or 0) + int(p.get("comments") or 0))
+            tmp.append(q)
+        tmp.sort(key=lambda x: (x.get("score", 0), x.get("likes", 0)), reverse=True)
+        if tmp:
+            return tmp[: max(1, min(num_scripts, 5))]
+        return all_posts[: max(1, min(num_scripts, 5))]
+
     return ranked[: max(1, min(num_scripts, 5))]
 
 # ---------- ASR helpers (yt-dlp + ffmpeg + faster-whisper) ----------
@@ -760,6 +865,26 @@ def _download_audio(url: str, out_dir: str) -> str:
         raise RuntimeError(f"ffmpeg failed: {e.stderr.decode('utf-8','ignore')[:800]}")
     return wav_path
 
+def _download_media_direct(media_url: str, out_dir: str) -> str:
+    """
+    Descarga un MP4 directamente (requests) y lo convierte a WAV mono 16k con ffmpeg.
+    Devuelve la ruta WAV.
+    """
+    import requests
+    mp4_path = os.path.join(out_dir, "input.mp4")
+    with requests.get(media_url, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        with open(mp4_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+    wav_path = os.path.join(out_dir, "audio.wav")
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", mp4_path, "-ac", "1", "-ar", "16000", wav_path],
+        check=True, capture_output=True
+    )
+    return wav_path
+
 def _whisper_transcribe(audio_path: str) -> str:
     try:
         from faster_whisper import WhisperModel
@@ -772,11 +897,191 @@ def _whisper_transcribe(audio_path: str) -> str:
     parts = [seg.text.strip() for seg in segments]
     return " ".join(parts).strip() or "(vacío)"
 
-def transcribe_link(url: str) -> str:
+def transcribe_link(url: str, media_url: Optional[str] = None) -> str:
     with tempfile.TemporaryDirectory() as td:
-        wav = _download_audio(url, td)
+        if media_url:
+            wav = _download_media_direct(media_url, td)
+        else:
+            wav = _download_audio(url, td)
         text = _whisper_transcribe(wav)
     return text
+
+# ---------- GUIDEON (Claude) helpers ----------
+def _anthropic_messages(system_text: str, user_text: str) -> Optional[str]:
+    """Call Anthropic Messages API. Returns text content or None."""
+    api_key = CLAUDE_API_KEY
+    if not api_key:
+        return None
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    payload = {
+        "model": CLAUDE_MODEL,
+        "max_tokens": GUIDEON_MAX_TOKENS,
+        "temperature": GUIDEON_TEMP,
+        "system": system_text,
+        "messages": [
+            {"role": "user", "content": user_text}
+        ],
+    }
+    try:
+        resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
+        if resp.status_code >= 400:
+            print(f"[GUIDEON] HTTP {resp.status_code}: {resp.text[:300]} ...")
+            return None
+        data = resp.json()
+        parts = data.get("content") or []
+        texts = []
+        for p in parts:
+            if isinstance(p, dict) and p.get("type") == "text":
+                texts.append(p.get("text") or "")
+        out = "\n".join(t for t in texts if t)
+        return out.strip() or None
+    except Exception as e:
+        print(f"[GUIDEON] request failed: {e}")
+        return None
+
+def _safe_json_extract(text: str) -> Optional[dict]:
+    """Intenta extraer un JSON {script, hooks, cta} desde un texto. Tolerante a ruido."""
+    if not text:
+        return None
+    # Primer intento: parsear todo
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    # Segundo intento: buscar el primer bloque {...}
+    try:
+        m = _re.search(r"\{[\s\S]*\}", text)
+        if m:
+            obj = json.loads(m.group(0))
+            if isinstance(obj, dict):
+                return obj
+    except Exception:
+        return None
+    return None
+
+# ---------- Helper: rewrite_with_guideon for per-card rewrites ----------
+def adapt_with_guideon(transcript: str, niche_prompt: str, rules_prompt: str,
+                       adaptation_level: str = "simple", rules_source: str = "guideon",
+                       custom_rules: str = "", lang: str = None) -> dict:
+    """Devuelve dict con keys: script, hooks (list), cta (str). Fallback: script=transcript."""
+    lang = (lang or GUIDEON_LANG_DEFAULT or "es").strip()
+    t = (transcript or "").strip()
+    # Limita longitud para controlar costos
+    if len(t) > 2000:
+        t = t[:2000] + "..."
+
+    # System
+    if adaptation_level == "simple":
+        simple_rules = _load_prompt("sencilla")
+        if simple_rules:
+            system_text = simple_rules
+        else:
+            system_text = (
+                "Eres un guionista que ADAPTA un texto al NICHO indicado, sin reestructurar ni cambiar el tono original. "
+                "Conserva la idea, pero reemplaza ejemplos, términos y CTA al contexto del nicho. Evita frases idénticas. "
+                f"Idioma: {lang}"
+            )
+    else:
+        if rules_source == "custom" and custom_rules.strip():
+            base = _load_prompt("reglas_del_usuario")
+            if not base:
+                base = "Eres un guionista senior para Reels/TikTok. Sigue estas reglas del usuario con prioridad. Entrega final con // corte. "
+            system_text = f"{base}\n\nREGLAS_USUARIO:\n{custom_rules.strip()}\nIdioma: {lang}"
+        else:
+            guideon_rules = _load_prompt("guionista")
+            if not guideon_rules:
+                guideon_rules = (
+                    "Eres un guionista senior para Reels/TikTok. Estructura: Hook (&lt;3s) → Desarrollo (2-3 ideas) → "
+                    "Prueba social → CTA. Originalidad obligatoria. Usa cortes (// corte). "
+                )
+            system_text = f"{guideon_rules}\nIdioma: {lang}"
+
+    # User task
+    if adaptation_level == "simple":
+        user_text = (
+            f"NICHO: {niche_prompt}\n"
+            f"REGLAS: {rules_prompt}\n"
+            "ADAPTA SOLO el contexto (ejemplos, CTA, terminología) sin cambiar estructura ni ritmo original.\n"
+            "Devuélvelo como TEXTO PLANO listo para grabar.\n\n"
+            f"TEXTO_ORIG:\n{t}\n"
+        )
+    else:
+        user_text = (
+            f"Nicho/Producto: {niche_prompt}\n"
+            f"Reglas/Tono: {rules_prompt}\n"
+            f"Idioma: {lang}\n"
+            "Transcripción fuente a adaptar (NO copiar literal):\n" + t + "\n\n"
+            "Entrega SOLO un JSON con esta forma exacta:\n"
+            "{\n  \"script\": \"texto final listo para grabar con // corte\",\n  \"hooks\": [\"hook1\",\"hook2\",\"hook3\",\"hook4\",\"hook5\"],\n  \"cta\": \"llamado a la acción\"\n}\n"
+        )
+
+    resp_text = _anthropic_messages(system_text, user_text)
+    if not resp_text:
+        return {"script": transcript, "hooks": [], "cta": ""}
+
+    obj = _safe_json_extract(resp_text) if adaptation_level != "simple" else None
+    if obj and isinstance(obj, dict):
+        script = (obj.get("script") or transcript or "").strip()
+        hooks = obj.get("hooks") or []
+        cta = obj.get("cta") or ""
+    else:
+        # simple: devolvió texto plano
+        script = resp_text.strip()
+        hooks = []
+        cta = ""
+
+    return {"script": script, "hooks": hooks, "cta": cta}
+
+# ---------- Helper: rewrite_with_guideon for per-card rewrites ----------
+def rewrite_with_guideon(script: str, user_prompt: str, niche_prompt: str = "",
+                         adaptation_level: str = "completa",
+                         rules_source: str = "guideon",
+                         custom_rules: str = "",
+                         lang: Optional[str] = None) -> dict:
+    """Toma un guion existente y aplica cambios pedidos por el usuario usando Guideon/Claude.
+    Devuelve dict {script, hooks, cta}. Si no hay JSON válido en salida, devuelve texto plano en `script`.
+    """
+    lang = (lang or GUIDEON_LANG_DEFAULT or "es").strip()
+    base_text = (script or "").strip()
+    if len(base_text) > 4000:
+        base_text = base_text[:4000] + "..."
+
+    # Siempre usar prompts/guionista como system_text, con fallback si no existe
+    guideon_rules = _load_prompt("guionista")
+    if not guideon_rules:
+        guideon_rules = (
+            "Eres un guionista senior para Reels/TikTok. Estructura: Hook (<3s) → Desarrollo (2-3 ideas) → Prueba social → CTA. "
+            "Originalidad obligatoria. Usa // corte."
+        )
+    system_text = f"{guideon_rules}\nIdioma: {lang}"
+
+    user_text = (
+        f"NICHO (opcional): {niche_prompt}\n"
+        "A partir del TEXTO_BASE, realiza SOLO los cambios requeridos por el usuario.\n"
+        "Si procede, devuelve un JSON con esta forma; si no aplica, devuelve solo texto plano:\n"
+        "{\n  \"script\": \"texto listo con // corte\",\n  \"hooks\": [\"...\"],\n  \"cta\": \"...\"\n}\n\n"
+        f"INSTRUCCIÓN_USUARIO:\n{user_prompt}\n\n"
+        f"TEXTO_BASE:\n{base_text}\n"
+    )
+
+    resp = _anthropic_messages(system_text, user_text)
+    if not resp:
+        return {"script": script, "hooks": [], "cta": ""}
+    obj = _safe_json_extract(resp)
+    if obj and isinstance(obj, dict):
+        return {
+            "script": (obj.get("script") or script or "").strip(),
+            "hooks": obj.get("hooks") or [],
+            "cta": obj.get("cta") or "",
+        }
+    return {"script": resp.strip(), "hooks": [], "cta": ""}
 
 # ---------- Single-link transcribe (real) ----------
 @app.post("/transcribe")
@@ -799,6 +1104,25 @@ def transcribe(req: TranscribeReq):
         )
     except Exception as e:
         return JSONResponse({"error": "transcription_failed", "detail": str(e)}, status_code=500)
+
+# ---------- Per-card rewrite endpoint ----------
+@app.post("/guideon/rewrite")
+def guideon_rewrite(req: RewriteReq):
+    try:
+        if not CLAUDE_API_KEY:
+            return JSONResponse({"error": "no_claude_key", "detail": "Configura CLAUDE_API_KEY en el entorno."}, status_code=400)
+        out = rewrite_with_guideon(
+            script=req.script,
+            user_prompt=req.user_prompt,
+            niche_prompt=req.niche_prompt or "",
+            adaptation_level=(req.adaptation_level or "completa"),
+            rules_source=(req.rules_source or "guideon"),
+            custom_rules=req.custom_rules or "",
+            lang=req.lang or GUIDEON_LANG_DEFAULT,
+        )
+        return out
+    except Exception as e:
+        return JSONResponse({"error": "guideon_failed", "detail": str(e)}, status_code=500)
 
 # ---------- Job start: scrape + rank + transcribe ----------
 @app.post("/job/start")
@@ -862,7 +1186,7 @@ def job_start(req: JobReq):
             return JSONResponse({"items": demo})
 
         # 4) Rank and pick Top-N
-        top_posts = select_top_posts(all_posts, req.num_scripts)
+        top_posts = select_top_posts(all_posts, req.num_scripts, getattr(req, "sort_by", "score"), getattr(req, "order", "desc"))
         
         if not top_posts:
             top_posts = all_posts[: max(1, min(req.num_scripts, 5))]
@@ -871,11 +1195,44 @@ def job_start(req: JobReq):
         items = []
         for p in top_posts:
             try:
-                transcript_text = transcribe_link(p["url"])
+                transcript_text = transcribe_link(p["url"], p.get("media_url") or None)
             except Exception as e:
                 transcript_text = f"(Error transcribiendo este video) {str(e)[:200]}"
-            # cuando integremos Guideon, adaptaremos si mode == "creative"
+
             script_text = transcript_text
+            hooks = []
+            cta = ""
+
+            if (req.mode or "").lower() == "creative":
+                cobj = req.creative or {}
+                niche = (cobj.get("niche_prompt") or "").strip()
+                rules = (cobj.get("rules_prompt") or "").strip()
+                adaptation_level = (cobj.get("adaptation_level") or "simple").strip().lower()
+                rules_source = (cobj.get("rules_source") or "guideon").strip().lower()
+                custom_rules = (cobj.get("custom_rules") or "").strip()
+                lang = (cobj.get("lang") or GUIDEON_LANG_DEFAULT or "es").strip()
+
+                guide = adapt_with_guideon(
+                    transcript=transcript_text,
+                    niche_prompt=niche,
+                    rules_prompt=rules,
+                    adaptation_level=adaptation_level,
+                    rules_source=rules_source,
+                    custom_rules=custom_rules,
+                    lang=lang,
+                )
+                script_text = guide.get("script") or transcript_text
+                hooks = guide.get("hooks") or []
+                cta = guide.get("cta") or ""
+
+                # Formatea para mostrar hooks/cta arriba del guion en la card actual
+                if hooks or cta:
+                    header = []
+                    if hooks:
+                        header.append("[HOOKS]\n- " + "\n- ".join([str(h) for h in hooks if h]))
+                    if cta:
+                        header.append("\n[CTA]\n" + str(cta))
+                    script_text = ("\n\n".join(header) + "\n\n[GUION]\n" + script_text).strip()
 
             items.append({
                 "url": p["url"],
@@ -895,3 +1252,4 @@ def job_start(req: JobReq):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+#nota

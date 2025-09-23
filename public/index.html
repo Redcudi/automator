@@ -6,15 +6,17 @@
   <title>CreatorHoop — Espía & Creativo</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/public/styles.css" />
+  <!-- If you embed in WordPress, uncomment and set your Railway backend URL -->
+  <!-- pre<script>window.CREATORHOOP_API = 'https://automator-production-82f2.up.railway.app';</script> -->
 </head>
 <body>
   <div class="bg"></div>
   <main class="container">
     <header class="topbar">
-      <h1>CreatorHoop</h1>
-      <p class="subtitle">Modo Recopilador • Modo Creativo</p>
+      <h1>Automator</h1>
+      <p class="subtitle"></p>
     </header>
 
     <section class="panel glass">
@@ -51,14 +53,23 @@
               <option>5</option>
             </select>
           </div>
+          <div class="field">
+            <label>Ordenar por</label>
+            <select id="sortBy">
+              <option value="score" selected>Mejor video (score)</option>
+              <option value="likes">Más likes</option>
+              <option value="views">Más vistas</option>
+              <option value="comments">Más comentarios</option>
+            </select>
+          </div>
         </div>
 
         <div class="field">
-          <label>Perfiles a analizar (3)</label>
+          <label>Perfiles a analizar (mín. 1, máx. 3)</label>
           <div class="links">
             <input type="url" placeholder="https://instagram.com/handle o https://www.tiktok.com/@handle" class="link" required/>
-            <input type="url" placeholder="https://instagram.com/handle o https://www.tiktok.com/@handle" class="link" required/>
-            <input type="url" placeholder="https://instagram.com/handle o https://www.tiktok.com/@handle" class="link" required/>
+            <input type="url" placeholder="https://instagram.com/handle o https://www.tiktok.com/@handle" class="link" />
+            <input type="url" placeholder="https://instagram.com/handle o https://www.tiktok.com/@handle" class="link" />
           </div>
         </div>
 
@@ -68,8 +79,21 @@
             <textarea id="niche" rows="3" placeholder="Ej: Ayudo a creadores a editar videos con CapCut..."></textarea>
           </div>
           <div class="field">
-            <label>Reglas/tono del contenido</label>
-            <textarea id="rules" rows="3" placeholder="Tono directo; hook <3s; CTA a DM con 'EDITAR'; evitar tecnicismos..."></textarea>
+            <label>Nivel de adaptación</label>
+            <div class="segmented" id="adaptationLevel">
+              <label class="seg-pill"><input type="radio" name="adaptation" value="simple" checked><span>Adaptación sencilla</span></label>
+              <label class="seg-pill"><input type="radio" name="adaptation" value="completa"><span>Adaptación completa</span></label>
+            </div>
+            <div class="hint">Sencilla: adapta el nicho sin reestructurar. Completa: reescribe con estructura + hooks + CTA.</div>
+          </div>
+
+          <div id="rulesSourceRow" class="field hidden">
+            <label>Fuente de reglas</label>
+            <div class="segmented" id="rulesSource">
+              <label class="seg-pill"><input type="radio" name="rulesSrc" value="guideon" checked><span>Guideon</span></label>
+              <label class="seg-pill"><input type="radio" name="rulesSrc" value="custom"><span>Tus propias reglas</span></label>
+            </div>
+            <textarea id="customRules" class="hidden" rows="3" placeholder="Escribe tus reglas (hooks, tono, CTA, estructura)…"></textarea>
           </div>
         </div>
 
@@ -78,8 +102,15 @@
           <button type="button" class="btn ghost" id="clearBtn">Limpiar</button>
         </div>
       </form>
+      <div class="progress glass">
+        <div class="progress-bar">
+          <div id="progressFill" class="progress-fill"></div>
+        </div>
+        <div id="progressLabel" class="progress-label">Listo</div>
+        <ul id="progressSteps" class="progress-steps"></ul>
+      </div>
     </section>
-
+  
     <section class="results glass">
       <div class="results-head">
         <h2>Guiones</h2>
@@ -88,24 +119,38 @@
       <div id="cards" class="cards"></div>
     </section>
   </main>
-
-  <template id="cardTemplate">
-    <article class="card">
-      <div class="metrics">
-        <span class="badge">👁 <b class="v">0</b></span>
-        <span class="badge">❤️ <b class="l">0</b></span>
-        <span class="badge">💬 <b class="c">0</b></span>
-        <span class="badge">⭐ <b class="s">0</b></span>
+<!---prueba--->
+<template id="cardTemplate">
+  <article class="card">
+    <div class="metrics">
+      <span class="badge">👁 <b class="v">0</b></span>
+      <span class="badge">❤️ <b class="l">0</b></span>
+      <span class="badge">💬 <b class="c">0</b></span>
+      <span class="badge">⭐ <b class="s">0</b></span>
+    </div>
+    <h3 class="title">Script</h3>
+    <pre class="script"></pre>
+    <div class="rev-nav">
+      <button class="rev-prev" type="button" title="Versión anterior">◀︎</button>
+      <span class="rev-indicator">1/1</span>
+      <button class="rev-next" type="button" title="Siguiente versión">▶︎</button>
+    </div>
+    <div class="card-actions">
+      <a class="link" target="_blank" rel="noopener">Ver post</a>
+      <button class="copy">Copiar</button>
+    </div>
+    <div class="refine">
+      <label>Mejorar con Claude</label>
+      <div class="row">
+        <input class="refine-input" type="text" placeholder="Pide cambios: más corto, tono motivador, agrega CTA…">
+        <button type="button" class="btn small refine-send">Aplicar</button>
       </div>
-      <h3 class="title">Script</h3>
-      <pre class="script"></pre>
-      <div class="card-actions">
-        <a class="link" target="_blank" rel="noopener">Ver post</a>
-        <button class="copy">Copiar</button>
-      </div>
-    </article>
-  </template>
-
+      <div class="refine-log"></div>
+    </div>
+  </article>
+</template>
   <script src="/public/app.js"></script>
+  <!-- Consentimiento legal -->
+
 </body>
 </html>
