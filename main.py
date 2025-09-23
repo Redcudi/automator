@@ -85,6 +85,9 @@ APIFY_TT_ACTOR = os.getenv("APIFY_TT_ACTOR", "apify~tiktok-scraper")
 APIFY_ONLY = os.getenv("APIFY_ONLY", "1").lower() in ("1", "true", "yes")  # si True, NO usar fallback yt_dlp
 DEBUG_APIFY = os.getenv("DEBUG_APIFY", "0").lower() in ("1", "true", "yes")
 
+# ---- ASR debug flag ----
+DEBUG_ASR = os.getenv("DEBUG_ASR", "0").lower() in ("1", "true", "yes")
+
 if DEBUG_APIFY:
     print("[APIFY] Config:", {
         "APIFY_TOKEN": bool(os.getenv("APIFY_TOKEN")),
@@ -871,7 +874,21 @@ def _download_audio(url: str, out_dir: str) -> str:
     last_err = None
     for attempt in (1, 2):
         try:
+            if DEBUG_ASR:
+                print("[ASR] yt-dlp cmd:", " ".join(base_cmd))
             res = subprocess.run(base_cmd, check=True, capture_output=True)
+            if DEBUG_ASR:
+                try:
+                    print("[ASR] yt-dlp stdout:", res.stdout.decode('utf-8','ignore')[:1000])
+                    print("[ASR] yt-dlp stderr:", res.stderr.decode('utf-8','ignore')[:1000])
+                except Exception:
+                    pass
+            # list temp dir contents
+            if DEBUG_ASR:
+                try:
+                    print("[ASR] temp dir:", out_dir, os.listdir(out_dir))
+                except Exception:
+                    pass
             # yt-dlp debe haber creado input.wav por --audio-format wav
             if not os.path.exists(out_wav):
                 # como fallback, busca cualquier input.* descargado por si la conversión no corrió
@@ -885,7 +902,11 @@ def _download_audio(url: str, out_dir: str) -> str:
         except subprocess.CalledProcessError as e:
             stdout = e.stdout.decode('utf-8','ignore')[:400]
             stderr = e.stderr.decode('utf-8','ignore')[:800]
-            last_err = f"yt-dlp failed: {stderr} | out: {stdout}"
+            try:
+                listing = os.listdir(out_dir)
+            except Exception:
+                listing = []
+            last_err = f"yt-dlp failed: {stderr} | out: {stdout} | dir: {listing}"
         except Exception as e:
             last_err = str(e)
         time.sleep(1)
@@ -928,6 +949,8 @@ def _download_media_direct(media_url: str, out_dir: str) -> str:
             wav_path,
         ]
         subprocess.run(cmd, check=True, capture_output=True)
+        if DEBUG_ASR:
+            print("[ASR] ffmpeg HLS ->", wav_path, os.path.exists(wav_path))
         return wav_path
 
     # Caso archivo directo (mp4/webm)
@@ -947,6 +970,8 @@ def _download_media_direct(media_url: str, out_dir: str) -> str:
             time.sleep(1)
 
     subprocess.run(["ffmpeg", "-y", "-i", mp4_path, "-ac", "1", "-ar", "16000", wav_path], check=True, capture_output=True)
+    if DEBUG_ASR:
+        print("[ASR] ffmpeg file ->", wav_path, os.path.exists(wav_path))
     return wav_path
 
 def _whisper_transcribe(audio_path: str) -> str:
@@ -964,6 +989,8 @@ def _whisper_transcribe(audio_path: str) -> str:
 def transcribe_link(url: str, media_url: Optional[str] = None) -> str:
     last_err = None
     with tempfile.TemporaryDirectory() as td:
+        if DEBUG_ASR:
+            print("[ASR] transcribe_link url=", url, "media_url=", media_url)
         # 1) Si tenemos media_url, intenta primero descarga directa
         if media_url:
             try:
@@ -971,12 +998,22 @@ def transcribe_link(url: str, media_url: Optional[str] = None) -> str:
                 return _whisper_transcribe(wav)
             except Exception as e:
                 last_err = f"direct_download_failed: {str(e)[:300]}"
+                if DEBUG_ASR:
+                    print("[ASR] direct_download_failed:", str(e)[:500])
         # 2) Fallback a yt-dlp con headers/reintento
         try:
             wav = _download_audio(url, td)
             return _whisper_transcribe(wav)
         except Exception as e:
             last_err = f"yt_dlp_failed: {str(e)[:300]}"
+            if DEBUG_ASR:
+                print("[ASR] yt_dlp_failed:", str(e)[:500])
+        if DEBUG_ASR:
+            try:
+                files = [(f, os.path.getsize(os.path.join(td, f))) for f in os.listdir(td)]
+                print("[ASR] temp dir final:", files)
+            except Exception:
+                pass
         raise RuntimeError((last_err or "no_transcription") + " | hint: if TikTok/IG, media_url might be HLS; ffmpeg HLS path enabled.")
 
 # ---------- GUIDEON (Claude) helpers ----------
