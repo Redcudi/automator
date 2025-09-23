@@ -558,9 +558,11 @@ def fetch_tiktok_posts_apify(profile_url: str, start: datetime, end: datetime, l
                 duration = 10
 
         media_url = (
-            (it.get("video") or {}).get("downloadAddr")
+            (it.get("video") or {}).get("playAddrH264")
             or (it.get("video") or {}).get("playAddr")
+            or (it.get("video") or {}).get("downloadAddr")
             or it.get("playableUrl")
+            or it.get("videoUrl")
             or ""
         )
 
@@ -888,12 +890,12 @@ def _download_audio(url: str, out_dir: str) -> str:
 
 def _download_media_direct(media_url: str, out_dir: str) -> str:
     """
-    Descarga un MP4 directamente (requests) y lo convierte a WAV mono 16k con ffmpeg.
-    Añade headers para TikTok/Instagram y hace pequeños reintentos.
-    Devuelve la ruta WAV.
+    Descarga y convierte audio cuando tenemos un media_url directo.
+    - Si es un .m3u8 (HLS), usamos ffmpeg directamente desde la URL con headers.
+    - Si es un archivo (mp4/webm), lo bajamos con requests y convertimos con ffmpeg.
+    Devuelve la ruta WAV en out_dir.
     """
     import requests
-    import itertools
 
     ua = os.getenv("YTDLP_UA", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
     headers = {"User-Agent": ua}
@@ -909,8 +911,23 @@ def _download_media_direct(media_url: str, out_dir: str) -> str:
             "Accept": "*/*",
         })
 
-    mp4_path = os.path.join(out_dir, "input.mp4")
+    wav_path = os.path.join(out_dir, "audio.wav")
 
+    # Caso HLS (m3u8): leer directo con ffmpeg + headers
+    if ".m3u8" in media_url or media_url.endswith(".m3u8"):
+        hdr = "\r\n".join([f"{k}: {v}" for k, v in headers.items()])
+        cmd = [
+            "ffmpeg", "-y",
+            "-headers", hdr,
+            "-i", media_url,
+            "-ac", "1", "-ar", "16000",
+            wav_path,
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        return wav_path
+
+    # Caso archivo directo (mp4/webm)
+    mp4_path = os.path.join(out_dir, "input.mp4")
     for attempt in (1, 2):
         try:
             with requests.get(media_url, headers=headers, stream=True, timeout=60) as r:
@@ -925,11 +942,7 @@ def _download_media_direct(media_url: str, out_dir: str) -> str:
                 raise RuntimeError(f"media direct download failed: {str(e)[:300]}")
             time.sleep(1)
 
-    wav_path = os.path.join(out_dir, "audio.wav")
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", mp4_path, "-ac", "1", "-ar", "16000", wav_path],
-        check=True, capture_output=True
-    )
+    subprocess.run(["ffmpeg", "-y", "-i", mp4_path, "-ac", "1", "-ar", "16000", wav_path], check=True, capture_output=True)
     return wav_path
 
 def _whisper_transcribe(audio_path: str) -> str:
@@ -960,7 +973,7 @@ def transcribe_link(url: str, media_url: Optional[str] = None) -> str:
             return _whisper_transcribe(wav)
         except Exception as e:
             last_err = f"yt_dlp_failed: {str(e)[:300]}"
-    raise RuntimeError(last_err or "no_transcription")
+        raise RuntimeError((last_err or "no_transcription") + " | hint: if TikTok/IG, media_url might be HLS; ffmpeg HLS path enabled.")
 
 # ---------- GUIDEON (Claude) helpers ----------
 def _anthropic_messages(system_text: str, user_text: str) -> Optional[str]:
