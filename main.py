@@ -12,6 +12,28 @@ from dotenv import load_dotenv
 import json, time, urllib.parse, requests
 load_dotenv()
 
+# Optional: allow passing cookies.txt via base64 in env (useful on Railway)
+import base64
+
+def _init_inline_cookies_env():
+    b64 = os.getenv("YTDLP_COOKIES_INLINE_B64", "").strip()
+    if not b64:
+        return None
+    try:
+        raw = base64.b64decode(b64)
+        path = "/tmp/cookies.txt"
+        with open(path, "wb") as f:
+            f.write(raw)
+        os.environ["YTDLP_COOKIES"] = path
+        if os.getenv("DEBUG_ASR", "0").lower() in ("1","true","yes"):
+            print("[ASR] wrote inline cookies ->", path)
+        return path
+    except Exception as e:
+        print("[ASR] failed to write inline cookies:", e)
+        return None
+
+_init_inline_cookies_env()
+
 # CORS (allow WP/Railway embeds)
 CORS_ALLOW_ORIGINS = os.getenv("CORS_ALLOW_ORIGINS", "*")
 # Comma-separated list, e.g. "https://creatorhoop.com,https://*.creatorhoop.com,https://automator-production-82f2.up.railway.app"
@@ -485,19 +507,32 @@ def _resolve_instagram_media_via_apify(post_url: str) -> str:
         if proxy_groups:
             proxy_cfg["apifyProxyGroups"] = [g.strip() for g in proxy_groups.split(",") if g.strip()]
 
-    payload = {
-        "directUrls": [post_url],
-        "resultsLimit": 1,
-        "includeComments": False,
-        "includeVideoThumbnails": False,
-    }
-    if proxy_cfg:
-        payload["proxyConfiguration"] = proxy_cfg
+    # Try multiple payload variants supported by common IG actors
+    payloads = []
+    A = {"directUrls": [post_url], "resultsLimit": 1, "includeComments": False, "includeVideoThumbnails": False}
+    if proxy_cfg: A["proxyConfiguration"] = proxy_cfg
+    payloads.append((A, "IG-post-A:directUrls"))
 
-    items = _run_apify_actor_sync_items(actor, token, payload, debug_tag="IG-post-resolver")
+    B = {"postUrls": [post_url], "resultsLimit": 1, "includeComments": False}
+    if proxy_cfg: B["proxyConfiguration"] = proxy_cfg
+    payloads.append((B, "IG-post-B:postUrls"))
+
+    C = {"directUrls": [post_url], "resultsType": "posts", "resultsLimit": 1}
+    if proxy_cfg: C["proxyConfiguration"] = proxy_cfg
+    payloads.append((C, "IG-post-C:resultsType=posts"))
+
+    items = []
+    for payload, tag in payloads:
+        items = _run_apify_actor_sync_items(actor, token, payload, debug_tag=tag)
+        if items:
+            break
+        items = _run_apify_actor(actor, token, payload, run_timeout_sec=int(os.getenv("APIFY_RUN_TIMEOUT_SEC", "120")), debug_tag=tag)
+        if items:
+            break
+
     if not items:
-        items = _run_apify_actor(actor, token, payload, run_timeout_sec=int(os.getenv("APIFY_RUN_TIMEOUT_SEC", "120")), debug_tag="IG-post-resolver")
-    if not items:
+        if DEBUG_APIFY:
+            print("[IG resolver] no items for post", post_url)
         return ""
 
     it = items[0] if isinstance(items, list) else {}
@@ -518,7 +553,7 @@ def _resolve_instagram_media_via_apify(post_url: str) -> str:
         or ""
     )
     if DEBUG_APIFY:
-        print("[IG resolver] media_url:", media_url[:120] if media_url else None)
+        print("[IG resolver] media_url:", media_url[:160] if media_url else None)
     return media_url or ""
 
 def fetch_tiktok_posts_apify(profile_url: str, start: datetime, end: datetime, limit: int = 50) -> List[Post]:
@@ -909,6 +944,9 @@ def _download_audio(url: str, out_dir: str) -> str:
     ua = os.getenv("YTDLP_UA", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
     cookie_file = os.getenv("YTDLP_COOKIES", "").strip()
     cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+
+    if DEBUG_ASR and cookie_file:
+        print("[ASR] using cookies file:", cookie_file)
 
     base_cmd = [
         sys.executable, "-m", "yt_dlp",
