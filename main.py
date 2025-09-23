@@ -437,12 +437,21 @@ def fetch_instagram_posts_apify(profile_url: str, start: datetime, end: datetime
         comments = it.get("commentsCount") or it.get("comments") or 0
         duration = it.get("videoDuration") or it.get("duration") or 0
 
-        # NEW: intento de URL directa del video desde el actor
+        # Extrae posibles URLs de video con varias claves conocidas del actor
+        vv = (it.get("video_versions") or [])
+        first_vv_url = vv[0].get("url") if vv and isinstance(vv[0], dict) else ""
+        dash_info = (it.get("dashInfo") or {})
+        clips_meta = (it.get("clipsMetadata") or {})
+        cm_audio = (clips_meta.get("audio") or {}).get("audio_src") if isinstance(clips_meta, dict) else ""
+
         media_url = (
             it.get("videoUrl")
             or it.get("video_url")
-            or (it.get("media") or {}).get("videoUrl")
             or it.get("videoUrlHd")
+            or (it.get("media") or {}).get("videoUrl")
+            or first_vv_url
+            or dash_info.get("videoUrl")
+            or cm_audio
             or ""
         )
 
@@ -457,6 +466,60 @@ def fetch_instagram_posts_apify(profile_url: str, start: datetime, end: datetime
             "media_url": str(media_url) if media_url else ""
         })
     return posts
+
+# ---- Helper: Resolve Instagram media via Apify for a direct post URL ----
+def _resolve_instagram_media_via_apify(post_url: str) -> str:
+    """Intenta resolver una URL de video reproducible para un POST específico de Instagram usando el actor IG.
+    Devuelve media_url o cadena vacía si no hay.
+    """
+    token = os.getenv("APIFY_TOKEN", "").strip()
+    if not token:
+        return ""
+    actor = os.getenv("APIFY_IG_ACTOR", "apify~instagram-scraper")
+
+    use_proxy = os.getenv("APIFY_USE_PROXY", "0").lower() in ("1","true","yes")
+    proxy_groups = os.getenv("APIFY_PROXY_GROUPS", "")
+    proxy_cfg = None
+    if use_proxy:
+        proxy_cfg = {"useApifyProxy": True}
+        if proxy_groups:
+            proxy_cfg["apifyProxyGroups"] = [g.strip() for g in proxy_groups.split(",") if g.strip()]
+
+    payload = {
+        "directUrls": [post_url],
+        "resultsLimit": 1,
+        "includeComments": False,
+        "includeVideoThumbnails": False,
+    }
+    if proxy_cfg:
+        payload["proxyConfiguration"] = proxy_cfg
+
+    items = _run_apify_actor_sync_items(actor, token, payload, debug_tag="IG-post-resolver")
+    if not items:
+        items = _run_apify_actor(actor, token, payload, run_timeout_sec=int(os.getenv("APIFY_RUN_TIMEOUT_SEC", "120")), debug_tag="IG-post-resolver")
+    if not items:
+        return ""
+
+    it = items[0] if isinstance(items, list) else {}
+    vv = (it.get("video_versions") or [])
+    first_vv_url = vv[0].get("url") if vv and isinstance(vv[0], dict) else ""
+    dash_info = (it.get("dashInfo") or {})
+    clips_meta = (it.get("clipsMetadata") or {})
+    cm_audio = (clips_meta.get("audio") or {}).get("audio_src") if isinstance(clips_meta, dict) else ""
+
+    media_url = (
+        it.get("videoUrl")
+        or it.get("video_url")
+        or it.get("videoUrlHd")
+        or (it.get("media") or {}).get("videoUrl")
+        or first_vv_url
+        or dash_info.get("videoUrl")
+        or cm_audio
+        or ""
+    )
+    if DEBUG_APIFY:
+        print("[IG resolver] media_url:", media_url[:120] if media_url else None)
+    return media_url or ""
 
 def fetch_tiktok_posts_apify(profile_url: str, start: datetime, end: datetime, limit: int = 50) -> List[Post]:
     """
@@ -1000,6 +1063,17 @@ def transcribe_link(url: str, media_url: Optional[str] = None) -> str:
                 last_err = f"direct_download_failed: {str(e)[:300]}"
                 if DEBUG_ASR:
                     print("[ASR] direct_download_failed:", str(e)[:500])
+        # 1.5) Si es un post de Instagram y no tenemos media_url, intenta resolverlo vía Apify
+        if (not media_url) and ("instagram.com" in url):
+            try:
+                resolved = _resolve_instagram_media_via_apify(url)
+                if resolved:
+                    wav = _download_media_direct(resolved, td)
+                    return _whisper_transcribe(wav)
+            except Exception as e:
+                last_err = f"ig_resolver_failed: {str(e)[:300]}"
+                if DEBUG_ASR:
+                    print("[ASR] ig_resolver_failed:", str(e)[:500])
         # 2) Fallback a yt-dlp con headers/reintento
         try:
             wav = _download_audio(url, td)
