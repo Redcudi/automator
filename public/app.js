@@ -43,16 +43,12 @@ function ensureUsageBadge(){
   if (!badge){
     badge = document.createElement('span');
     badge.id = 'usageBadge';
-    badge.style.marginLeft = '10px';
-    badge.style.fontSize = '12px';
-    badge.style.padding = '4px 8px';
-    badge.style.borderRadius = '8px';
-    badge.style.background = '#eef3ff';
-    badge.style.color = '#264a96';
-    badge.style.border = '1px solid #cfd9ff';
+    badge.classList.add('usage-badge');
     // place near the run button
     const actions = document.querySelector('.actions');
     if (actions){ actions.appendChild(badge); }
+  } else {
+    badge.classList.add('usage-badge');
   }
   return badge;
 }

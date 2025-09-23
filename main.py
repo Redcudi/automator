@@ -1347,16 +1347,21 @@ def _openai_messages(system_text: str, user_text: str) -> Optional[str]:
             url = f"{OPENAI_BASE_URL}/responses"
             payload = {
                 "model": model,
-                "temperature": GUIDEON_TEMP,
-                "max_output_tokens": GUIDEON_MAX_TOKENS,
                 "input": [
                     {"role": "system", "content": system_text},
                     {"role": "user",   "content": user_text},
                 ],
             }
+            # Some o4-* models in Responses API do not accept 'temperature' or 'max_output_tokens'
+            if not model.lower().startswith("o4"):
+                payload["temperature"] = GUIDEON_TEMP
+                payload["max_output_tokens"] = GUIDEON_MAX_TOKENS
             if DEBUG_GUIDEON:
-                print("[GUIDEON][openai][responses] model=", model, " temp=", payload.get("temperature"), " max_o_t=", payload.get("max_output_tokens"))
-                print("[GUIDEON][openai][responses] system size=", len(system_text or ""), " user size=", len(user_text or ""))
+                print("[GUIDEON][openai][responses] model=", model,
+                      " temp=", payload.get("temperature"),
+                      " max_o_t=", payload.get("max_output_tokens"))
+                print("[GUIDEON][openai][responses] system size=", len(system_text or ""),
+                      " user size=", len(user_text or ""))
             resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
             if resp.status_code >= 400:
                 print(f"[GUIDEON][openai][responses] HTTP {resp.status_code}: {resp.text[:300]} ...")

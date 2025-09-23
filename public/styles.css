@@ -28,12 +28,12 @@ body{
 /* Animated grain background with subtle halo gradients */
 .bg{
   position:fixed; inset:0; z-index:-2;
-  background:
+  /*background:
     radial-gradient(650px 480px at 20% 18%, rgba(255,255,255,0.10) 0%, transparent 80%),
     radial-gradient(780px 540px at 85% 30%, rgba(255,255,255,0.09) 0%, transparent 80%),
     linear-gradient(180deg, #0A0A0A 0%, #18181B 100%);
   filter: saturate(115%);
-  pointer-events:none;
+  pointer-events:none;*/
   animation: halo-move 10s linear infinite alternate;
 }
 @keyframes halo-move {
@@ -321,3 +321,18 @@ pre.script{
 .chk-row { display: flex; gap: 10px; align-items: center; margin: 12px 0 16px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .legal-version { opacity: .7; font-size: .8rem; margin-top: 8px; }
+
+/* Usage badge style */
+.usage-badge{
+  margin-left:10px;
+  font-size:12px;
+  border:1.2px solid var(--glass-border);
+  background: rgba(255,255,255,0.04);
+  padding:10px 14px;
+  border-radius:12px;
+  color:var(--text);
+  cursor:pointer;
+  transition: background .18s, border .14s, color .16s, box-shadow .13s;
+  font-family: inherit;
+  font-weight:500;
+}
