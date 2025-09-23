@@ -477,7 +477,19 @@ def fetch_instagram_posts_apify(profile_url: str, start: datetime, end: datetime
             or ""
         )
 
-        is_video = bool(media_url) or bool(duration) or bool(it.get("isVideo") or it.get("is_video") or it.get("video"))
+        # Heurísticas para tipo de media
+        is_video_flag = bool(media_url) or bool(duration) or bool(it.get("isVideo") or it.get("is_video") or it.get("video"))
+        is_carousel_flag = bool(it.get("isCarousel") or it.get("carousel_media") or it.get("sidecarChildren") or it.get("children"))
+        pt = (it.get("productType") or it.get("mediaType") or "").lower()
+        if "carousel" in pt:
+            is_carousel_flag = True
+
+        if is_video_flag:
+            media_type = "video"
+        elif is_carousel_flag:
+            media_type = "carousel"
+        else:
+            media_type = "image"
 
         posts.append({
             "platform_post_id": str(it.get("id") or it.get("shortCode") or url),
@@ -488,7 +500,8 @@ def fetch_instagram_posts_apify(profile_url: str, start: datetime, end: datetime
             "comments": int(comments) if comments else 0,
             "duration_sec": int(duration) if duration else 0,
             "media_url": str(media_url) if media_url else "",
-            "is_video": bool(is_video),
+            "is_video": (media_type == "video"),
+            "media_type": media_type,
         })
     return posts
 
@@ -681,6 +694,7 @@ def fetch_tiktok_posts_apify(profile_url: str, start: datetime, end: datetime, l
             "duration_sec": int(duration) if duration else 0,
             "media_url": str(media_url) if media_url else "",
             "is_video": bool(is_video),
+            "media_type": "video",
         })
 
     return posts
@@ -1418,27 +1432,28 @@ def job_start(req: JobReq):
         if not top_posts:
             top_posts = all_posts[: max(1, min(req.num_scripts, 5))]
 
-        # Filtra posts que no sean video (evita intentar transcribir imágenes/carruseles)
+        # Separa por tipo: primero tarjetas para NO-video, luego transcribe videos
         video_posts = [p for p in top_posts if p.get("is_video") or p.get("media_url") or (p.get("duration_sec") or 0) > 0]
-        if not video_posts:
-            if DEBUG_APIFY:
-                return JSONResponse({
-                    "error": "no_video_posts",
-                    "hint": "Los posts seleccionados no son videos (IG puede devolver imágenes/carruseles). Ajusta filtros o perfiles.",
-                    "details": {"selected": top_posts}
-                }, status_code=200)
-            # Fallback demo si no hay videos
-            demo = []
-            for i in range(req.num_scripts):
-                demo.append({
-                    "url": f"https://example.com/post/{i+1}",
-                    "metrics": {"views": 100000+i*1000, "likes": 5000+i*50, "comments": 200+i*5, "score": 80.0+i},
-                    "script": f"[DEMO] Guion {i+1}: Hook <3s... Desarrollo... CTA..."
-                })
-            return JSONResponse({"items": demo})
+        nonvideo_posts = [p for p in top_posts if p not in video_posts]
 
-        # 5) Transcribe each Top post (real)
         items = []
+
+        # a) NO-video → mostrar etiqueta en lugar de transcripción
+        for p in nonvideo_posts:
+            mtype = (p.get("media_type") or ("image" if not p.get("is_video") else "video")).lower()
+            etiqueta = "Imagen" if mtype == "image" else ("Carrusel" if mtype == "carousel" else mtype.capitalize())
+            items.append({
+                "url": p["url"],
+                "metrics": {
+                    "views": p.get("views"),
+                    "likes": p.get("likes"),
+                    "comments": p.get("comments"),
+                    "score": p.get("score")
+                },
+                "script": f"[POST NO ES VIDEO: {etiqueta}]"
+            })
+
+        # b) Videos → transcribir normalmente
         for p in video_posts:
             try:
                 transcript_text = transcribe_link(p["url"], p.get("media_url") or None)
@@ -1471,7 +1486,6 @@ def job_start(req: JobReq):
                 hooks = guide.get("hooks") or []
                 cta = guide.get("cta") or ""
 
-                # Formatea para mostrar hooks/cta arriba del guion en la card actual
                 if hooks or cta:
                     header = []
                     if hooks:
