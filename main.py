@@ -1215,52 +1215,109 @@ def _anthropic_messages(system_text: str, user_text: str) -> Optional[str]:
 
 # ---------- GUIDEON (OpenAI) helper ----------
 def _openai_messages(system_text: str, user_text: str) -> Optional[str]:
-    """Call OpenAI Chat Completions (o4-mini, etc.). Returns text content or None."""
+    """Call OpenAI (Chat Completions or Responses API). Returns text content or None.
+    - If OPENAI_MODEL looks like an o4-* model, prefer the Responses API.
+    - Otherwise, use Chat Completions.
+    """
     api_key = OPENAI_API_KEY
     if not api_key:
         return None
-    url = f"{OPENAI_BASE_URL}/chat/completions"
+
+    model = (OPENAI_MODEL or "").strip()
+    use_responses = model.lower().startswith("o4")  # e.g., o4-mini, o4, o4-high
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": OPENAI_MODEL,
-        "temperature": GUIDEON_TEMP,
-        "max_tokens": GUIDEON_MAX_TOKENS,
-        "messages": [
-            {"role": "system", "content": system_text},
-            {"role": "user", "content": user_text},
-        ],
-    }
-    if DEBUG_GUIDEON:
-        print("[GUIDEON][openai] payload model=", payload.get("model"), " temp=", payload.get("temperature"), " max_t=", payload.get("max_tokens"))
-        print("[GUIDEON][openai] system size=", len(system_text or ""), " user size=", len(user_text or ""))
+
     try:
+        if use_responses:
+            # ---- Responses API path ----
+            url = f"{OPENAI_BASE_URL}/responses"
+            payload = {
+                "model": model,
+                "temperature": GUIDEON_TEMP,
+                "max_output_tokens": GUIDEON_MAX_TOKENS,
+                "input": [
+                    {"role": "system", "content": system_text},
+                    {"role": "user",   "content": user_text},
+                ],
+            }
+            if DEBUG_GUIDEON:
+                print("[GUIDEON][openai][responses] model=", model, " temp=", payload.get("temperature"), " max_o_t=", payload.get("max_output_tokens"))
+                print("[GUIDEON][openai][responses] system size=", len(system_text or ""), " user size=", len(user_text or ""))
+            resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
+            if resp.status_code >= 400:
+                print(f"[GUIDEON][openai][responses] HTTP {resp.status_code}: {resp.text[:300]} ...")
+                # Soft fallback to chat completions if model mismatch
+                if resp.status_code == 404 or "model" in (resp.text or "").lower():
+                    use_responses = False
+                else:
+                    return None
+            else:
+                data = resp.json() or {}
+                if DEBUG_GUIDEON:
+                    print("[GUIDEON][openai][responses] keys:", list(data.keys()))
+                # Responses API shape: data["output"]["text"] or in content array
+                out_text = None
+                try:
+                    out_text = (data.get("output") or {}).get("text")
+                except Exception:
+                    out_text = None
+                if not out_text:
+                    try:
+                        # Sometimes "output" is a list of items with type/text
+                        output = data.get("output") or []
+                        if isinstance(output, list) and output:
+                            for part in output:
+                                if isinstance(part, dict):
+                                    t = part.get("text") or part.get("content")
+                                    if t:
+                                        out_text = t
+                                        break
+                    except Exception:
+                        pass
+                if isinstance(out_text, str):
+                    return out_text.strip() or None
+                # If could not parse, fallback to chat-completions
+                use_responses = False
+
+        # ---- Chat Completions path (default + fallback) ----
+        url = f"{OPENAI_BASE_URL}/chat/completions"
+        # If the user configured o4-* but /responses failed, try gpt-4o-mini as a compat alias
+        cc_model = model
+        if model.lower().startswith("o4"):
+            cc_model = os.getenv("OPENAI_CC_FALLBACK_MODEL", "gpt-4o-mini")
+        payload = {
+            "model": cc_model,
+            "temperature": GUIDEON_TEMP,
+            "max_tokens": GUIDEON_MAX_TOKENS,
+            "messages": [
+                {"role": "system", "content": system_text},
+                {"role": "user",   "content": user_text},
+            ],
+        }
+        if DEBUG_GUIDEON:
+            print("[GUIDEON][openai][chat] model=", cc_model, " temp=", payload.get("temperature"), " max_t=", payload.get("max_tokens"))
+            print("[GUIDEON][openai][chat] system size=", len(system_text or ""), " user size=", len(user_text or ""))
         resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
         if resp.status_code >= 400:
-            print(f"[GUIDEON][openai] HTTP {resp.status_code}: {resp.text[:300]} ...")
+            print(f"[GUIDEON][openai][chat] HTTP {resp.status_code}: {resp.text[:300]} ...")
             return None
         data = resp.json() or {}
         if DEBUG_GUIDEON:
-            print("[GUIDEON][openai] raw resp keys:", list(data.keys()))
-            try:
-                _dbg = (data.get("choices") or [{}])[0]
-                _dbg_msg = (_dbg.get("message") or {}).get("content")
-                if isinstance(_dbg_msg, str):
-                    print("[GUIDEON][openai] resp msg sample:", _dbg_msg[:300])
-            except Exception:
-                pass
+            print("[GUIDEON][openai][chat] keys:", list(data.keys()))
         choice = (data.get("choices") or [{}])[0]
         msg = (choice.get("message") or {}).get("content")
         if isinstance(msg, str):
             return msg.strip() or None
-        # Some SDKs return list of parts; normalize
         if isinstance(msg, list):
             parts = [p.get("text", "") if isinstance(p, dict) else str(p) for p in msg]
             out = "\n".join([t for t in parts if t])
             return out.strip() or None
         return None
+
     except Exception as e:
         print(f"[GUIDEON][openai] request failed: {e}")
         return None
@@ -1424,7 +1481,9 @@ def rewrite_with_guideon(script: str, user_prompt: str, niche_prompt: str = "",
 
     resp = _llm_messages(system_text, user_text)
     if not resp:
-        return {"script": script, "hooks": [], "cta": ""}
+        if DEBUG_GUIDEON:
+            print("[GUIDEON] LLM returned no content; preserving base text with warning")
+        return {"script": base_text + "\n\n[Aviso] No se pudo generar una versión adaptada (revisa modelo/API key o sube el nivel a 'completa').", "hooks": [], "cta": ""}
     obj = _safe_json_extract(resp)
     if obj and isinstance(obj, dict):
         new_script = (obj.get("script") or script or "").strip()
