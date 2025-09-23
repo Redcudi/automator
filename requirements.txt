@@ -6,3 +6,4 @@ ffmpeg-python
 python-multipart
 python-dotenv
 requests
+psycopg2-binary>=2.9

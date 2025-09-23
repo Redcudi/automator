@@ -2,7 +2,76 @@
 // Configuración del consentimiento
 const CONSENT_VERSION = "2024-06-11"; // Cambia si el texto cambia
 const CONSENT_KEY = "consent_accepted_" + CONSENT_VERSION;
+
 const USER_ID = "demo_user"; // O actualiza según lógica real
+
+// ===== Usage limits (Collector & Creative) =====
+// Plan via URL: ?plan=starter|pro  (default: starter)
+const USER_PLAN = (new URLSearchParams(location.search).get('plan') || 'starter').toLowerCase();
+// Per-plan limits per feature
+const USAGE_LIMITS = { starter: 3, pro: 7 };
+// Feature keys for each mode
+const FEATURE_KEYS = { collector: 'analyze_profiles', creative: 'generate_scripts' };
+
+function usageMonthKey(){
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+}
+function usageStorageKey(userId, feature){
+  return `usage:${userId}:${feature}:${usageMonthKey()}`;
+}
+function getUsageCount(userId, feature){
+  try{ return Math.max(0, parseInt(localStorage.getItem(usageStorageKey(userId, feature))||'0',10)); }catch{ return 0; }
+}
+function setUsageCount(userId, feature, val){
+  try{ localStorage.setItem(usageStorageKey(userId, feature), String(Math.max(0, val|0))); }catch{}
+}
+function incUsageCount(userId, feature){ setUsageCount(userId, feature, getUsageCount(userId, feature) + 1); }
+function planLimit(plan){
+  const lim = USAGE_LIMITS[plan];
+  return (typeof lim === 'number' ? lim : Infinity);
+}
+function remainingUses(plan, userId, feature){
+  const limit = planLimit(plan);
+  if (!isFinite(limit)) return Infinity;
+  return Math.max(0, limit - getUsageCount(userId, feature));
+}
+
+// Badge UI for remaining uses
+function ensureUsageBadge(){
+  let badge = document.getElementById('usageBadge');
+  if (!badge){
+    badge = document.createElement('span');
+    badge.id = 'usageBadge';
+    badge.style.marginLeft = '10px';
+    badge.style.fontSize = '12px';
+    badge.style.padding = '4px 8px';
+    badge.style.borderRadius = '8px';
+    badge.style.background = '#eef3ff';
+    badge.style.color = '#264a96';
+    badge.style.border = '1px solid #cfd9ff';
+    // place near the run button
+    const actions = document.querySelector('.actions');
+    if (actions){ actions.appendChild(badge); }
+  }
+  return badge;
+}
+function renderUsageBadge(){
+  const badge = ensureUsageBadge();
+  const m = (window.currentMode || 'collector');
+  const feature = FEATURE_KEYS[m] || FEATURE_KEYS.collector;
+  const limit = planLimit(USER_PLAN);
+  if (!isFinite(limit)){
+    badge.textContent = 'Usos: ilimitado';
+    badge.style.display = 'inline-block';
+    return;
+  }
+  const used = getUsageCount(USER_ID, feature);
+  const left = Math.max(0, limit - used);
+  // Text: "X de Y mensajes disponibles"
+  badge.textContent = `${left} de ${limit} mensajes disponibles (${m === 'creative' ? 'Creativo' : 'Recopilador'})`;
+  badge.style.display = 'inline-block';
+}
 
 function showConsentModalIfNeeded() {
   if (sessionStorage.getItem(CONSENT_KEY)) return;
@@ -132,6 +201,7 @@ tabs.forEach(btn=>{
     creativeFields.classList.toggle('hidden', mode !== 'creative');
     runBtn.textContent = mode === 'creative' ? 'Generar guiones' : 'Analizar perfiles';
     updateCreativeUI();
+    renderUsageBadge();
   });
 });
 
@@ -245,6 +315,20 @@ form.addEventListener('submit', async (e)=>{
   statusEl.textContent = 'Procesando…';
   cards.innerHTML = '';
 
+  // ---- Gate: limitar usos por modo (collector/creative) ----
+  if ((USER_PLAN === 'starter' || USER_PLAN === 'pro')){
+    const m = (window.currentMode || 'collector');
+    const feature = FEATURE_KEYS[m] || FEATURE_KEYS.collector;
+    const left = remainingUses(USER_PLAN, USER_ID, feature);
+    if (left <= 0){
+      const planLim = planLimit(USER_PLAN);
+      const label = (m === 'creative') ? 'Generar guiones' : 'Analizar perfiles';
+      alert(`Has alcanzado tus ${planLim} usos mensuales de "${label}" (${USER_PLAN === 'starter' ? 'Starter' : 'Pro'}).`);
+      statusEl.textContent = 'Límite alcanzado';
+      return;
+    }
+  }
+
   const links = Array.from(document.querySelectorAll('.link')).map(i=>i.value.trim()).filter(Boolean);
   if (links.length < 1) {
     alert('Agrega al menos 1 perfil (Instagram o TikTok).');
@@ -305,6 +389,16 @@ form.addEventListener('submit', async (e)=>{
       throw new Error(data.hint || data.detail || data.error);
     }
     (data.items || []).forEach(addCard);
+    // Registrar uso al éxito (collector/creative)
+    if ((USER_PLAN === 'starter' || USER_PLAN === 'pro')){
+      const m = (window.currentMode || 'collector');
+      const feature = FEATURE_KEYS[m] || FEATURE_KEYS.collector;
+      incUsageCount(USER_ID, feature);
+      const left = remainingUses(USER_PLAN, USER_ID, feature);
+      const limit = planLimit(USER_PLAN);
+      console.log(`[USAGE] ${m}: usado ${ (limit - left) }/${limit} este mes`);
+      renderUsageBadge();
+    }
     completeProgress();
     statusEl.textContent = 'Completado';
   } catch (err) {
@@ -447,3 +541,6 @@ updateCreativeUI();
 
 // Mostrar consentimiento al cargar la página si no se aceptó aún
 showConsentModalIfNeeded();
+
+// Mostrar badge de usos al cargar
+renderUsageBadge();

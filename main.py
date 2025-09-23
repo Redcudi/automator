@@ -12,6 +12,66 @@ from dotenv import load_dotenv
 import json, time, urllib.parse, requests
 load_dotenv()
 
+# ===== Optional: PostgreSQL usage counters =====
+try:
+    import psycopg2
+    import psycopg2.extras
+except Exception:
+    psycopg2 = None  # will stay None if package not installed
+
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+USAGE_LIMIT_STARTER = int(os.getenv("USAGE_LIMIT_STARTER", "3"))
+USAGE_LIMIT_PRO = int(os.getenv("USAGE_LIMIT_PRO", "7"))
+
+PG_ENABLED = bool(DATABASE_URL and psycopg2)
+
+def _pg_connect():
+    if not PG_ENABLED:
+        return None
+    return psycopg2.connect(DATABASE_URL, connect_timeout=5)
+
+def _ensure_usage_table():
+    if not PG_ENABLED:
+        return False
+    ddl = (
+        "CREATE TABLE IF NOT EXISTS usage_counters (\n"
+        "  id SERIAL PRIMARY KEY,\n"
+        "  user_id TEXT NOT NULL,\n"
+        "  feature TEXT NOT NULL,\n"
+        "  month TEXT NOT NULL,\n"
+        "  plan TEXT,\n"
+        "  used INTEGER NOT NULL DEFAULT 0,\n"
+        "  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n"
+        "  UNIQUE (user_id, feature, month)\n"
+        ");\n"
+        "CREATE INDEX IF NOT EXISTS idx_usage_lookup ON usage_counters (user_id, feature, month);"
+    )
+    try:
+        with _pg_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(ddl)
+            conn.commit()
+        return True
+    except Exception as e:
+        print("[USAGE][PG] init failed:", e)
+        return False
+
+_ensure_usage_table()
+
+def _usage_limit_for_plan(plan: str) -> int:
+    p = (plan or "").lower().strip()
+    if p == "starter":
+        return USAGE_LIMIT_STARTER
+    if p == "pro":
+        return USAGE_LIMIT_PRO
+    return 1_000_000_000  # effectively unlimited for other plans
+
+from datetime import datetime
+
+def _usage_month_key() -> str:
+    d = datetime.utcnow()
+    return f"{d.year}-{d.month:02d}"
+
 # Optional: allow passing cookies.txt via base64 in env (useful on Railway)
 import base64
 
@@ -58,6 +118,55 @@ async def consent_log(req: Request):
         return {"ok": True}
     except Exception as e:
         return JSONResponse({"error": "consent_log_failed", "detail": str(e)}, status_code=400)
+
+# ---------- Usage API (per account) ----------
+class UsageIncReq(BaseModel):
+    user_id: str
+    feature: str  # e.g., 'analyze_profiles' | 'generate_scripts'
+    plan: str     # 'starter' | 'pro' | others
+
+@app.get("/usage/remaining")
+def usage_remaining(user_id: str, feature: str, plan: str):
+    month = _usage_month_key()
+    limit = _usage_limit_for_plan(plan)
+    if not PG_ENABLED:
+        return JSONResponse({"error": "pg_disabled", "detail": "PostgreSQL no disponible (instala psycopg2 y define DATABASE_URL)."}, status_code=503)
+    try:
+        with _pg_connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                cur.execute("SELECT used FROM usage_counters WHERE user_id=%s AND feature=%s AND month=%s", (user_id, feature, month))
+                row = cur.fetchone()
+                used = int(row[0]) if row else 0
+        remaining = max(0, limit - used)
+        return {"user_id": user_id, "feature": feature, "plan": plan, "month": month, "limit": limit, "used": used, "remaining": remaining}
+    except Exception as e:
+        return JSONResponse({"error": "pg_error", "detail": str(e)}, status_code=500)
+
+@app.post("/usage/increment")
+def usage_increment(req: UsageIncReq):
+    month = _usage_month_key()
+    limit = _usage_limit_for_plan(req.plan)
+    if not PG_ENABLED:
+        return JSONResponse({"error": "pg_disabled", "detail": "PostgreSQL no disponible (instala psycopg2 y define DATABASE_URL)."}, status_code=503)
+    try:
+        with _pg_connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                # read current
+                cur.execute("SELECT used FROM usage_counters WHERE user_id=%s AND feature=%s AND month=%s FOR UPDATE", (req.user_id, req.feature, month))
+                row = cur.fetchone()
+                used = int(row[0]) if row else 0
+                if used >= limit:
+                    conn.rollback()
+                    return JSONResponse({"error": "limit_reached", "detail": f"Límite mensual alcanzado ({limit}).", "used": used, "limit": limit, "remaining": 0}, status_code=409)
+                if row:
+                    cur.execute("UPDATE usage_counters SET used=used+1, plan=%s, updated_at=NOW() WHERE user_id=%s AND feature=%s AND month=%s", (req.plan, req.user_id, req.feature, month))
+                else:
+                    cur.execute("INSERT INTO usage_counters (user_id, feature, month, plan, used) VALUES (%s, %s, %s, %s, 1)", (req.user_id, req.feature, month, req.plan))
+            conn.commit()
+        remaining = max(0, limit - (used + 1))
+        return {"ok": True, "used": used + 1, "limit": limit, "remaining": remaining, "month": month}
+    except Exception as e:
+        return JSONResponse({"error": "pg_error", "detail": str(e)}, status_code=500)
 
 import re as _re
 
@@ -142,6 +251,7 @@ if os.path.isdir(PUBLIC_DIR):
 
 @app.get("/")
 def home():
+    print(f"[USAGE] PostgreSQL limits: {'ON' if PG_ENABLED else 'OFF'}")
     idx = os.path.join(PUBLIC_DIR, "index.html")
     if os.path.exists(idx):
         return FileResponse(idx)
