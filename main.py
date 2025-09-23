@@ -477,6 +477,8 @@ def fetch_instagram_posts_apify(profile_url: str, start: datetime, end: datetime
             or ""
         )
 
+        is_video = bool(media_url) or bool(duration) or bool(it.get("isVideo") or it.get("is_video") or it.get("video"))
+
         posts.append({
             "platform_post_id": str(it.get("id") or it.get("shortCode") or url),
             "url": str(url),
@@ -485,7 +487,8 @@ def fetch_instagram_posts_apify(profile_url: str, start: datetime, end: datetime
             "likes": int(likes) if likes else 0,
             "comments": int(comments) if comments else 0,
             "duration_sec": int(duration) if duration else 0,
-            "media_url": str(media_url) if media_url else ""
+            "media_url": str(media_url) if media_url else "",
+            "is_video": bool(is_video),
         })
     return posts
 
@@ -667,6 +670,7 @@ def fetch_tiktok_posts_apify(profile_url: str, start: datetime, end: datetime, l
             or ""
         )
 
+        is_video = True
         posts.append({
             "platform_post_id": str(it.get("id") or url),
             "url": str(url),
@@ -675,7 +679,8 @@ def fetch_tiktok_posts_apify(profile_url: str, start: datetime, end: datetime, l
             "likes": int(likes) if likes else 0,
             "comments": int(comments) if comments else 0,
             "duration_sec": int(duration) if duration else 0,
-            "media_url": str(media_url) if media_url else ""
+            "media_url": str(media_url) if media_url else "",
+            "is_video": bool(is_video),
         })
 
     return posts
@@ -1413,9 +1418,28 @@ def job_start(req: JobReq):
         if not top_posts:
             top_posts = all_posts[: max(1, min(req.num_scripts, 5))]
 
+        # Filtra posts que no sean video (evita intentar transcribir imágenes/carruseles)
+        video_posts = [p for p in top_posts if p.get("is_video") or p.get("media_url") or (p.get("duration_sec") or 0) > 0]
+        if not video_posts:
+            if DEBUG_APIFY:
+                return JSONResponse({
+                    "error": "no_video_posts",
+                    "hint": "Los posts seleccionados no son videos (IG puede devolver imágenes/carruseles). Ajusta filtros o perfiles.",
+                    "details": {"selected": top_posts}
+                }, status_code=200)
+            # Fallback demo si no hay videos
+            demo = []
+            for i in range(req.num_scripts):
+                demo.append({
+                    "url": f"https://example.com/post/{i+1}",
+                    "metrics": {"views": 100000+i*1000, "likes": 5000+i*50, "comments": 200+i*5, "score": 80.0+i},
+                    "script": f"[DEMO] Guion {i+1}: Hook <3s... Desarrollo... CTA..."
+                })
+            return JSONResponse({"items": demo})
+
         # 5) Transcribe each Top post (real)
         items = []
-        for p in top_posts:
+        for p in video_posts:
             try:
                 transcript_text = transcribe_link(p["url"], p.get("media_url") or None)
             except Exception as e:
