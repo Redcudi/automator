@@ -1419,7 +1419,10 @@ def transcribe(req: TranscribeReq):
 @app.post("/guideon/rewrite")
 def guideon_rewrite(req: RewriteReq):
     try:
-        if not CLAUDE_API_KEY:
+        # Validate API key depending on active provider
+        if GUIDEON_PROVIDER == "openai" and not OPENAI_API_KEY:
+            return JSONResponse({"error": "no_openai_key", "detail": "Configura OPENAI_API_KEY en el entorno."}, status_code=400)
+        if GUIDEON_PROVIDER == "anthropic" and not CLAUDE_API_KEY:
             return JSONResponse({"error": "no_claude_key", "detail": "Configura CLAUDE_API_KEY en el entorno."}, status_code=400)
         out = rewrite_with_guideon(
             script=req.script,
