@@ -61,13 +61,22 @@ async def consent_log(req: Request):
 
 import re as _re
 
-# ---------- GUIDEON (Claude) settings & prompt cache ----------
+# ---------- GUIDEON (LLM provider-agnostic) settings & prompt cache ----------
+# Provider can be: 'anthropic' or 'openai'. Defaults to anthropic to stay backward-compatible.
+GUIDEON_PROVIDER = os.getenv("GUIDEON_PROVIDER", "anthropic").strip().lower()
+
+# Anthropic (Claude)
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "").strip()
-# For your request, default to the Haiku model
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-haiku-20240307").strip()
+CLAUDE_MODEL   = os.getenv("CLAUDE_MODEL", "claude-3-haiku-20240307").strip()
+
+# OpenAI (o4-mini, etc.)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "o4-mini").strip()
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
+
 GUIDEON_LANG_DEFAULT = os.getenv("GUIDEON_LANG", "es").strip()
-GUIDEON_MAX_TOKENS = int(os.getenv("GUIDEON_MAX_TOKENS", "1400"))
-GUIDEON_TEMP = float(os.getenv("GUIDEON_TEMP", "0.5"))
+GUIDEON_MAX_TOKENS   = int(os.getenv("GUIDEON_MAX_TOKENS", "1400"))
+GUIDEON_TEMP         = float(os.getenv("GUIDEON_TEMP", "0.5"))
 
 
 _PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
@@ -117,6 +126,9 @@ if DEBUG_APIFY:
         "APIFY_TT_ACTOR": APIFY_TT_ACTOR,
         "APIFY_ONLY": APIFY_ONLY,
     })
+
+# Print GUIDEON provider config at startup
+print(f"[GUIDEON] Provider: {GUIDEON_PROVIDER} | ClaudeModel={CLAUDE_MODEL} | OpenAIModel={OPENAI_MODEL}")
 
 # Serve static UI from /public
 PUBLIC_DIR = os.path.join(os.path.dirname(__file__), "public")
@@ -1185,6 +1197,63 @@ def _anthropic_messages(system_text: str, user_text: str) -> Optional[str]:
         print(f"[GUIDEON] request failed: {e}")
         return None
 
+# ---------- GUIDEON (OpenAI) helper ----------
+def _openai_messages(system_text: str, user_text: str) -> Optional[str]:
+    """Call OpenAI Chat Completions (o4-mini, etc.). Returns text content or None."""
+    api_key = OPENAI_API_KEY
+    if not api_key:
+        return None
+    url = f"{OPENAI_BASE_URL}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": OPENAI_MODEL,
+        "temperature": GUIDEON_TEMP,
+        "max_tokens": GUIDEON_MAX_TOKENS,
+        "messages": [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_text},
+        ],
+    }
+    try:
+        resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
+        if resp.status_code >= 400:
+            print(f"[GUIDEON][openai] HTTP {resp.status_code}: {resp.text[:300]} ...")
+            return None
+        data = resp.json() or {}
+        choice = (data.get("choices") or [{}])[0]
+        msg = (choice.get("message") or {}).get("content")
+        if isinstance(msg, str):
+            return msg.strip() or None
+        # Some SDKs return list of parts; normalize
+        if isinstance(msg, list):
+            parts = [p.get("text", "") if isinstance(p, dict) else str(p) for p in msg]
+            out = "\n".join([t for t in parts if t])
+            return out.strip() or None
+        return None
+    except Exception as e:
+        print(f"[GUIDEON][openai] request failed: {e}")
+        return None
+
+# ---------- GUIDEON unified router ----------
+def _llm_messages(system_text: str, user_text: str) -> Optional[str]:
+    provider = (GUIDEON_PROVIDER or "anthropic").lower()
+    if provider == "openai":
+        # Prefer OpenAI when configured; fallback to Anthropic if missing key
+        out = _openai_messages(system_text, user_text)
+        if out is not None:
+            return out
+        # fallback
+        return _anthropic_messages(system_text, user_text)
+    # default anthropic
+    out = _anthropic_messages(system_text, user_text)
+    if out is not None:
+        return out
+    # fallback to OpenAI if anthropic failed and we have key
+    return _openai_messages(system_text, user_text)
+
 def _safe_json_extract(text: str) -> Optional[dict]:
     """Intenta extraer un JSON {script, hooks, cta} desde un texto. Tolerante a ruido."""
     if not text:
@@ -1263,7 +1332,7 @@ def adapt_with_guideon(transcript: str, niche_prompt: str, rules_prompt: str,
             "{\n  \"script\": \"texto final listo para grabar con // corte\",\n  \"hooks\": [\"hook1\",\"hook2\",\"hook3\",\"hook4\",\"hook5\"],\n  \"cta\": \"llamado a la acción\"\n}\n"
         )
 
-    resp_text = _anthropic_messages(system_text, user_text)
+    resp_text = _llm_messages(system_text, user_text)
     if not resp_text:
         return {"script": transcript, "hooks": [], "cta": ""}
 
@@ -1312,7 +1381,7 @@ def rewrite_with_guideon(script: str, user_prompt: str, niche_prompt: str = "",
         f"TEXTO_BASE:\n{base_text}\n"
     )
 
-    resp = _anthropic_messages(system_text, user_text)
+    resp = _llm_messages(system_text, user_text)
     if not resp:
         return {"script": script, "hooks": [], "cta": ""}
     obj = _safe_json_extract(resp)
