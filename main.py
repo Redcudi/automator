@@ -1,20 +1,9 @@
-from fastapi import Request
 
-# ---------- Consent log endpoint ----------
-@app.post("/consent/log")
-async def consent_log(req: Request):
-    try:
-        data = await req.json()
-        if os.getenv("DEBUG_CONSENT", "0").lower() in ("1","true","yes"):
-            print("[CONSENT]", data)
-        return {"ok": True}
-    except Exception as e:
-        return JSONResponse({"error": "consent_log_failed", "detail": str(e)}, status_code=400)
 
 import os, sys, tempfile, subprocess, re
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,6 +25,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------- Consent log endpoint ----------
+@app.post("/consent/log")
+async def consent_log(req: Request):
+    try:
+        data = await req.json()
+        if os.getenv("DEBUG_CONSENT", "0").lower() in ("1","true","yes"):
+            print("[CONSENT]", data)
+        return {"ok": True}
+    except Exception as e:
+        return JSONResponse({"error": "consent_log_failed", "detail": str(e)}, status_code=400)
 
 import re as _re
 

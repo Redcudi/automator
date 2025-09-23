@@ -70,15 +70,18 @@ function showConsentModalIfNeeded() {
   });
 }
 
-// Interceptar submit para mostrar consentimiento si no se aceptó (MOVIDO ABAJO PARA EVITAR ReferenceError)
-if (form) {
-  form.addEventListener("submit", function(e) {
-    if (!sessionStorage.getItem(CONSENT_KEY)) {
-      e.preventDefault();
-      showConsentModalIfNeeded();
-      return false;
-    }
-  });
+// Interceptar submit para mostrar consentimiento si no se aceptó (único y después de declarar `form`)
+if (!window._consentSubmitHooked) {
+  window._consentSubmitHooked = true;
+  if (form) {
+    form.addEventListener("submit", function(e) {
+      if (!sessionStorage.getItem(CONSENT_KEY)) {
+        e.preventDefault();
+        showConsentModalIfNeeded();
+        return false;
+      }
+    });
+  }
 }
 // public/app.js
 const tabs = document.querySelectorAll('.tab');
