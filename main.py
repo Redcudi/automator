@@ -837,12 +837,11 @@ def select_top_posts(all_posts: List[Post], num_scripts: int, sort_by: str = "sc
 # ---------- ASR helpers (yt-dlp + ffmpeg + faster-whisper) ----------
 def _download_audio(url: str, out_dir: str) -> str:
     tmp_template = os.path.join(out_dir, "input.%(ext)s")
-    # Opciones de robustez para IG/TikTok: UA, cookies, geo-bypass y concurrencia
     ua = os.getenv("YTDLP_UA", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-    cookie_file = os.getenv("YTDLP_COOKIES", "").strip()        # Ruta a un cookies.txt (opcional)
-    cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip()  # ej: 'chrome' (opcional)
+    cookie_file = os.getenv("YTDLP_COOKIES", "").strip()
+    cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip()
 
-    cmd = [
+    base_cmd = [
         sys.executable, "-m", "yt_dlp",
         "-f", "bestaudio/best",
         "--no-playlist",
@@ -852,45 +851,80 @@ def _download_audio(url: str, out_dir: str) -> str:
         "-o", tmp_template,
         url,
     ]
+
+    # Headers por plataforma (a veces TikTok/IG requieren Referer)
+    if "tiktok.com" in url:
+        base_cmd = base_cmd[:-1] + ["--add-header", "Referer:https://www.tiktok.com/", url]
+    elif "instagram.com" in url:
+        base_cmd = base_cmd[:-1] + ["--add-header", "Referer:https://www.instagram.com/", url]
+
     if cookie_file:
-        cmd.extend(["--cookies", cookie_file])
+        base_cmd.extend(["--cookies", cookie_file])
     if cookies_from_browser:
-        cmd.extend(["--cookies-from-browser", cookies_from_browser])
+        base_cmd.extend(["--cookies-from-browser", cookies_from_browser])
 
-    try:
-        res = subprocess.run(cmd, check=True, capture_output=True)
-    except subprocess.CalledProcessError as e:
-        # Eleva un error con el stderr decodificado para que el endpoint lo devuelva como detalle
-        raise RuntimeError(f"yt-dlp failed: {e.stderr.decode('utf-8','ignore')[:800]}")
+    last_err = None
+    for attempt in (1, 2):
+        try:
+            res = subprocess.run(base_cmd, check=True, capture_output=True)
+            # búsqueda amplia de archivo de salida (por si cambia la extensión)
+            files = [os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.startswith("input.")]
+            # como fallback, acepta cualquier media descargado en el dir temporal
+            if not files:
+                files = [os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.split(".")[-1].lower() in ("m4a","mp3","webm","mp4","mkv")]
+            if not files:
+                raise RuntimeError("No se pudo descargar el audio (no se encontró archivo de salida de yt-dlp).")
+            input_path = max(files, key=lambda p: os.path.getmtime(p))
+            wav_path = os.path.join(out_dir, "audio.wav")
+            subprocess.run(["ffmpeg", "-y", "-i", input_path, "-ac", "1", "-ar", "16000", wav_path], check=True, capture_output=True)
+            return wav_path
+        except subprocess.CalledProcessError as e:
+            last_err = f"yt-dlp failed: {e.stderr.decode('utf-8','ignore')[:800]}"
+        except Exception as e:
+            last_err = str(e)
+        time.sleep(1)
 
-    # encuentra el archivo descargado y convíertelo a WAV mono 16k con ffmpeg
-    files = [os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.startswith("input.")]
-    if not files:
-        raise RuntimeError("No se pudo descargar el audio (no se encontró archivo de salida de yt-dlp).")
-    input_path = files[0]
-    wav_path = os.path.join(out_dir, "audio.wav")
-    try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", input_path, "-ac", "1", "-ar", "16000", wav_path],
-            check=True, capture_output=True
-        )
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"ffmpeg failed: {e.stderr.decode('utf-8','ignore')[:800]}")
-    return wav_path
+    raise RuntimeError(last_err or "Fallo desconocido en descarga de audio")
 
 def _download_media_direct(media_url: str, out_dir: str) -> str:
     """
     Descarga un MP4 directamente (requests) y lo convierte a WAV mono 16k con ffmpeg.
+    Añade headers para TikTok/Instagram y hace pequeños reintentos.
     Devuelve la ruta WAV.
     """
     import requests
+    import itertools
+
+    ua = os.getenv("YTDLP_UA", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+    headers = {"User-Agent": ua}
+    if "tiktok.com" in media_url:
+        headers.update({
+            "Referer": "https://www.tiktok.com/",
+            "Origin": "https://www.tiktok.com",
+            "Accept": "*/*",
+        })
+    if "instagram.com" in media_url:
+        headers.update({
+            "Referer": "https://www.instagram.com/",
+            "Accept": "*/*",
+        })
+
     mp4_path = os.path.join(out_dir, "input.mp4")
-    with requests.get(media_url, stream=True, timeout=60) as r:
-        r.raise_for_status()
-        with open(mp4_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+
+    for attempt in (1, 2):
+        try:
+            with requests.get(media_url, headers=headers, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                with open(mp4_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 256):
+                        if chunk:
+                            f.write(chunk)
+            break
+        except Exception as e:
+            if attempt >= 2:
+                raise RuntimeError(f"media direct download failed: {str(e)[:300]}")
+            time.sleep(1)
+
     wav_path = os.path.join(out_dir, "audio.wav")
     subprocess.run(
         ["ffmpeg", "-y", "-i", mp4_path, "-ac", "1", "-ar", "16000", wav_path],
@@ -911,13 +945,22 @@ def _whisper_transcribe(audio_path: str) -> str:
     return " ".join(parts).strip() or "(vacío)"
 
 def transcribe_link(url: str, media_url: Optional[str] = None) -> str:
+    last_err = None
     with tempfile.TemporaryDirectory() as td:
+        # 1) Si tenemos media_url, intenta primero descarga directa
         if media_url:
-            wav = _download_media_direct(media_url, td)
-        else:
+            try:
+                wav = _download_media_direct(media_url, td)
+                return _whisper_transcribe(wav)
+            except Exception as e:
+                last_err = f"direct_download_failed: {str(e)[:300]}"
+        # 2) Fallback a yt-dlp con headers/reintento
+        try:
             wav = _download_audio(url, td)
-        text = _whisper_transcribe(wav)
-    return text
+            return _whisper_transcribe(wav)
+        except Exception as e:
+            last_err = f"yt_dlp_failed: {str(e)[:300]}"
+    raise RuntimeError(last_err or "no_transcription")
 
 # ---------- GUIDEON (Claude) helpers ----------
 def _anthropic_messages(system_text: str, user_text: str) -> Optional[str]:
