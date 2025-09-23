@@ -70,11 +70,17 @@ function showConsentModalIfNeeded() {
   });
 }
 
-// Interceptar submit para mostrar consentimiento si no se aceptó (único y después de declarar `form`)
+// public/app.js
+const tabs = document.querySelectorAll('.tab');
+const creativeFields = document.getElementById('creativeFields');
+const runBtn = document.getElementById('runBtn');
+const form = document.getElementById('controlForm');
+// Interceptar submit para mostrar consentimiento si no se aceptó (colocado después de declarar `form`)
 if (!window._consentSubmitHooked) {
   window._consentSubmitHooked = true;
-  if (form) {
-    form.addEventListener("submit", function(e) {
+  const consentForm = document.getElementById('controlForm');
+  if (consentForm) {
+    consentForm.addEventListener('submit', function(e) {
       if (!sessionStorage.getItem(CONSENT_KEY)) {
         e.preventDefault();
         showConsentModalIfNeeded();
@@ -83,11 +89,6 @@ if (!window._consentSubmitHooked) {
     });
   }
 }
-// public/app.js
-const tabs = document.querySelectorAll('.tab');
-const creativeFields = document.getElementById('creativeFields');
-const runBtn = document.getElementById('runBtn');
-const form = document.getElementById('controlForm');
 const cards = document.getElementById('cards');
 const statusEl = document.getElementById('jobStatus');
 const progressFill = document.getElementById('progressFill');
