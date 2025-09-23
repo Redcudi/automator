@@ -116,6 +116,9 @@ APIFY_TT_ACTOR = os.getenv("APIFY_TT_ACTOR", "apify~tiktok-scraper")
 APIFY_ONLY = os.getenv("APIFY_ONLY", "1").lower() in ("1", "true", "yes")  # si True, NO usar fallback yt_dlp
 DEBUG_APIFY = os.getenv("DEBUG_APIFY", "0").lower() in ("1", "true", "yes")
 
+# ---- GUIDEON debug flag ----
+DEBUG_GUIDEON = os.getenv("DEBUG_GUIDEON", "0").lower() in ("1", "true", "yes")
+
 # ---- ASR debug flag ----
 DEBUG_ASR = os.getenv("DEBUG_ASR", "0").lower() in ("1", "true", "yes")
 
@@ -129,6 +132,8 @@ if DEBUG_APIFY:
 
 # Print GUIDEON provider config at startup
 print(f"[GUIDEON] Provider: {GUIDEON_PROVIDER} | ClaudeModel={CLAUDE_MODEL} | OpenAIModel={OPENAI_MODEL}")
+if DEBUG_GUIDEON:
+    print("[GUIDEON] DEBUG enabled")
 
 # Serve static UI from /public
 PUBLIC_DIR = os.path.join(os.path.dirname(__file__), "public")
@@ -1180,12 +1185,23 @@ def _anthropic_messages(system_text: str, user_text: str) -> Optional[str]:
             {"role": "user", "content": user_text}
         ],
     }
+    if DEBUG_GUIDEON:
+        print("[GUIDEON][anthropic] model=", payload.get("model"), " temp=", payload.get("temperature"), " max_t=", payload.get("max_tokens"))
+        print("[GUIDEON][anthropic] system size=", len(system_text or ""), " user size=", len(user_text or ""))
     try:
         resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
         if resp.status_code >= 400:
             print(f"[GUIDEON] HTTP {resp.status_code}: {resp.text[:300]} ...")
             return None
         data = resp.json()
+        if DEBUG_GUIDEON:
+            print("[GUIDEON][anthropic] content parts:", len(data.get("content") or []))
+            try:
+                _p = (data.get("content") or [{}])[0]
+                if isinstance(_p, dict):
+                    print("[GUIDEON][anthropic] part sample:", (_p.get("text") or "")[:300])
+            except Exception:
+                pass
         parts = data.get("content") or []
         texts = []
         for p in parts:
@@ -1217,12 +1233,24 @@ def _openai_messages(system_text: str, user_text: str) -> Optional[str]:
             {"role": "user", "content": user_text},
         ],
     }
+    if DEBUG_GUIDEON:
+        print("[GUIDEON][openai] payload model=", payload.get("model"), " temp=", payload.get("temperature"), " max_t=", payload.get("max_tokens"))
+        print("[GUIDEON][openai] system size=", len(system_text or ""), " user size=", len(user_text or ""))
     try:
         resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
         if resp.status_code >= 400:
             print(f"[GUIDEON][openai] HTTP {resp.status_code}: {resp.text[:300]} ...")
             return None
         data = resp.json() or {}
+        if DEBUG_GUIDEON:
+            print("[GUIDEON][openai] raw resp keys:", list(data.keys()))
+            try:
+                _dbg = (data.get("choices") or [{}])[0]
+                _dbg_msg = (_dbg.get("message") or {}).get("content")
+                if isinstance(_dbg_msg, str):
+                    print("[GUIDEON][openai] resp msg sample:", _dbg_msg[:300])
+            except Exception:
+                pass
         choice = (data.get("choices") or [{}])[0]
         msg = (choice.get("message") or {}).get("content")
         if isinstance(msg, str):
@@ -1370,15 +1398,28 @@ def rewrite_with_guideon(script: str, user_prompt: str, niche_prompt: str = "",
             "Eres un guionista senior para Reels/TikTok. Estructura: Hook (<3s) → Desarrollo (2-3 ideas) → Prueba social → CTA. "
             "Originalidad obligatoria. Usa // corte."
         )
-    system_text = f"{guideon_rules}\nIdioma: {lang}"
 
+    # Refuerzos estrictos para que NO devuelva el mismo guion, y para obligar JSON
+    system_text = (
+        guideon_rules
+        + "\n\n[REGLAS ESTRICTAS]\n"
+          "1) Debes aplicar EXCLUSIVAMENTE los cambios pedidos en INSTRUCCIÓN_USUARIO.\n"
+          "2) Devuelve SIEMPRE un JSON EXACTO con las claves: script, hooks, cta. NADA fuera del JSON.\n"
+          "3) En `script`, devuelve el GUION COMPLETO listo para grabar con // corte.\n"
+          "4) Si la instrucción es ‘cambia el gancho’, sustituye el gancho pero CONSERVA el resto del guion.\n"
+          "5) Sustituye todos los placeholders (p.ej. [nicho]) por el nicho indicado, sin corchetes.\n"
+          "6) PROHIBIDO devolver el texto original sin cambios.\n"
+          "7) Si no puedes cumplir, responde este JSON de error: {\"script\":\"\",\"hooks\":[],\"cta\":\"[Error] No pude aplicar los cambios solicitados.\"}.\n"
+        + f"\nIdioma objetivo: {lang}\n"
+    )
+
+    # Mensaje de usuario con plantilla de salida obligatoria
     user_text = (
         f"NICHO (opcional): {niche_prompt}\n"
-        "A partir del TEXTO_BASE, realiza SOLO los cambios requeridos por el usuario.\n"
-        "Si procede, devuelve un JSON con esta forma; si no aplica, devuelve solo texto plano:\n"
-        "{\n  \"script\": \"texto listo con // corte\",\n  \"hooks\": [\"...\"],\n  \"cta\": \"...\"\n}\n\n"
-        f"INSTRUCCIÓN_USUARIO:\n{user_prompt}\n\n"
-        f"TEXTO_BASE:\n{base_text}\n"
+        "INSTRUCCIÓN_USUARIO: \n" + (user_prompt or "(sin cambios)") + "\n\n"
+        "TEXTO_BASE (no inventes, modifícalo según instrucción):\n" + base_text + "\n\n"
+        "FORMATO DE RESPUESTA (OBLIGATORIO, SOLO JSON):\n"
+        "{\n  \"script\": \"texto final listo para grabar con // corte\",\n  \"hooks\": [\"hook1\",\"hook2\"],\n  \"cta\": \"llamado a la acción\"\n}\n"
     )
 
     resp = _llm_messages(system_text, user_text)
@@ -1386,12 +1427,20 @@ def rewrite_with_guideon(script: str, user_prompt: str, niche_prompt: str = "",
         return {"script": script, "hooks": [], "cta": ""}
     obj = _safe_json_extract(resp)
     if obj and isinstance(obj, dict):
-        return {
-            "script": (obj.get("script") or script or "").strip(),
-            "hooks": obj.get("hooks") or [],
-            "cta": obj.get("cta") or "",
-        }
-    return {"script": resp.strip(), "hooks": [], "cta": ""}
+        new_script = (obj.get("script") or script or "").strip()
+        hooks = obj.get("hooks") or []
+        cta = obj.get("cta") or ""
+        # Si no hubo cambios sustanciales y el usuario pidió algo, fuerza mensaje claro
+        if (new_script.replace("\n"," ").strip() == base_text.replace("\n"," ").strip()) and (user_prompt or niche_prompt):
+            if DEBUG_GUIDEON:
+                print("[GUIDEON] unchanged script detected; returning warning stub")
+            return {"script": base_text + "\n\n[Aviso] No se aplicaron cambios. Replantea la instrucción de edición.", "hooks": hooks, "cta": cta}
+        return {"script": new_script, "hooks": hooks, "cta": cta}
+    # Si no fue JSON, devolver texto pero marcar si está intacto
+    clean_resp = (resp or "").strip()
+    if clean_resp.replace("\n"," ").strip() == base_text.replace("\n"," ").strip():
+        clean_resp += "\n\n[Aviso] La respuesta no aplicó cambios. Intenta especificar el modo (gancho/estructura/CTA) y el nicho."
+    return {"script": clean_resp, "hooks": [], "cta": ""}
 
 # ---------- Single-link transcribe (real) ----------
 @app.post("/transcribe")
