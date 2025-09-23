@@ -838,23 +838,26 @@ def select_top_posts(all_posts: List[Post], num_scripts: int, sort_by: str = "sc
 
 # ---------- ASR helpers (yt-dlp + ffmpeg + faster-whisper) ----------
 def _download_audio(url: str, out_dir: str) -> str:
-    tmp_template = os.path.join(out_dir, "input.%(ext)s")
+    out_tmpl = os.path.join(out_dir, "input.%(ext)s")
+    out_wav = os.path.join(out_dir, "input.wav")
     ua = os.getenv("YTDLP_UA", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
     cookie_file = os.getenv("YTDLP_COOKIES", "").strip()
     cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip()
 
     base_cmd = [
         sys.executable, "-m", "yt_dlp",
+        "-x", "--audio-format", "wav", "--audio-quality", "5",
         "-f", "bestaudio/best",
         "--no-playlist",
         "--geo-bypass",
         "-N", "4",
+        "--force-overwrites",
         "--user-agent", ua,
-        "-o", tmp_template,
+        "-o", out_tmpl,
         url,
     ]
 
-    # Headers por plataforma (a veces TikTok/IG requieren Referer)
+    # Headers por plataforma (TikTok/IG requieren Referer)
     if "tiktok.com" in url:
         base_cmd = base_cmd[:-1] + ["--add-header", "Referer:https://www.tiktok.com/", url]
     elif "instagram.com" in url:
@@ -869,19 +872,20 @@ def _download_audio(url: str, out_dir: str) -> str:
     for attempt in (1, 2):
         try:
             res = subprocess.run(base_cmd, check=True, capture_output=True)
-            # búsqueda amplia de archivo de salida (por si cambia la extensión)
-            files = [os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.startswith("input.")]
-            # como fallback, acepta cualquier media descargado en el dir temporal
-            if not files:
-                files = [os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.split(".")[-1].lower() in ("m4a","mp3","webm","mp4","mkv")]
-            if not files:
-                raise RuntimeError("No se pudo descargar el audio (no se encontró archivo de salida de yt-dlp).")
-            input_path = max(files, key=lambda p: os.path.getmtime(p))
-            wav_path = os.path.join(out_dir, "audio.wav")
-            subprocess.run(["ffmpeg", "-y", "-i", input_path, "-ac", "1", "-ar", "16000", wav_path], check=True, capture_output=True)
-            return wav_path
+            # yt-dlp debe haber creado input.wav por --audio-format wav
+            if not os.path.exists(out_wav):
+                # como fallback, busca cualquier input.* descargado por si la conversión no corrió
+                files = [os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.startswith("input.")]
+                if not files:
+                    raise RuntimeError("No se pudo descargar el audio (no se encontró archivo de salida de yt-dlp).")
+                # convierte a wav
+                latest = max(files, key=lambda p: os.path.getmtime(p))
+                subprocess.run(["ffmpeg", "-y", "-i", latest, "-ac", "1", "-ar", "16000", out_wav], check=True, capture_output=True)
+            return out_wav
         except subprocess.CalledProcessError as e:
-            last_err = f"yt-dlp failed: {e.stderr.decode('utf-8','ignore')[:800]}"
+            stdout = e.stdout.decode('utf-8','ignore')[:400]
+            stderr = e.stderr.decode('utf-8','ignore')[:800]
+            last_err = f"yt-dlp failed: {stderr} | out: {stdout}"
         except Exception as e:
             last_err = str(e)
         time.sleep(1)
