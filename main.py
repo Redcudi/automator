@@ -1374,36 +1374,61 @@ def _openai_messages(system_text: str, user_text: str) -> Optional[str]:
                 data = resp.json() or {}
                 if DEBUG_GUIDEON:
                     print("[GUIDEON][openai][responses] keys:", list(data.keys()))
-                # Robust parse for Responses API (o4-*): prefer output_text, then output.text,
-                # then concatenate content[].text if present.
-                out_text = (
-                    data.get("output_text")
-                    or (data.get("output") or {}).get("text")
-                )
-                if not out_text:
-                    try:
-                        content = (data.get("output") or {}).get("content") or data.get("content") or []
-                        parts = []
-                        for part in content:
-                            if isinstance(part, dict):
-                                if part.get("type") == "output_text" and isinstance(part.get("text"), str):
-                                    parts.append(part.get("text"))
-                                elif isinstance(part.get("text"), str):
-                                    parts.append(part.get("text"))
-                                elif isinstance(part.get("content"), list):
-                                    for sub in part.get("content"):
-                                        if isinstance(sub, dict) and sub.get("type") == "text" and isinstance(sub.get("text"), str):
-                                            parts.append(sub.get("text"))
-                        out_text = "\n".join([p for p in parts if p]) if parts else None
-                    except Exception:
-                        out_text = None
+                # ---- Robust parse for Responses API (handles dict/list) ----
+                def _parse_responses_output(d: dict) -> Optional[str]:
+                    if not isinstance(d, dict):
+                        return None
+                    # 1) Direct fields commonly present
+                    if isinstance(d.get("output_text"), str):
+                        return d["output_text"].strip()
+                    if isinstance(d.get("text"), str):  # some variants expose top-level text
+                        return d["text"].strip()
+
+                    out = d.get("output")
+
+                    # 2) When 'output' is a dict
+                    if isinstance(out, dict):
+                        if isinstance(out.get("text"), str):
+                            return out["text"].strip()
+                        content = out.get("content") or []
+                        parts: list[str] = []
+                        if isinstance(content, list):
+                            for part in content:
+                                if isinstance(part, dict):
+                                    if isinstance(part.get("text"), str):
+                                        parts.append(part["text"])
+                                    elif isinstance(part.get("content"), list):
+                                        for sub in part["content"]:
+                                            if isinstance(sub, dict) and isinstance(sub.get("text"), str):
+                                                parts.append(sub["text"])
+                        if parts:
+                            return "\n".join(parts).strip()
+
+                    # 3) When 'output' is a list (observed in logs)
+                    if isinstance(out, list):
+                        parts: list[str] = []
+                        for item in out:
+                            if isinstance(item, dict):
+                                if isinstance(item.get("text"), str):
+                                    parts.append(item["text"])
+                                c = item.get("content")
+                                if isinstance(c, list):
+                                    for sub in c:
+                                        if isinstance(sub, dict) and isinstance(sub.get("text"), str):
+                                            parts.append(sub["text"])
+                        if parts:
+                            return "\n".join(parts).strip()
+
+                    return None
+
+                out_text = _parse_responses_output(data)
                 if DEBUG_GUIDEON and not out_text:
                     try:
-                        print("[GUIDEON][openai][responses] WARN: empty output_text. raw=", (json.dumps(data)[:500] if data else "<none>"))
+                        print("[GUIDEON][openai][responses] WARN: empty output. raw=", (json.dumps(data)[:500] if data else "<none>"))
                     except Exception:
                         pass
-                if out_text and isinstance(out_text, str):
-                    return out_text.strip() or None
+                if out_text:
+                    return out_text
                 # If could not parse, fallback to chat-completions
                 use_responses = False
 
