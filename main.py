@@ -1362,7 +1362,7 @@ def _openai_messages(system_text: str, user_text: str) -> Optional[str]:
                       " max_o_t=", payload.get("max_output_tokens"))
                 print("[GUIDEON][openai][responses] system size=", len(system_text or ""),
                       " user size=", len(user_text or ""))
-            resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
+            resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
             if resp.status_code >= 400:
                 print(f"[GUIDEON][openai][responses] HTTP {resp.status_code}: {resp.text[:300]} ...")
                 # Soft fallback to chat completions if model mismatch
@@ -1374,26 +1374,35 @@ def _openai_messages(system_text: str, user_text: str) -> Optional[str]:
                 data = resp.json() or {}
                 if DEBUG_GUIDEON:
                     print("[GUIDEON][openai][responses] keys:", list(data.keys()))
-                # Responses API shape: data["output"]["text"] or in content array
-                out_text = None
-                try:
-                    out_text = (data.get("output") or {}).get("text")
-                except Exception:
-                    out_text = None
+                # Robust parse for Responses API (o4-*): prefer output_text, then output.text,
+                # then concatenate content[].text if present.
+                out_text = (
+                    data.get("output_text")
+                    or (data.get("output") or {}).get("text")
+                )
                 if not out_text:
                     try:
-                        # Sometimes "output" is a list of items with type/text
-                        output = data.get("output") or []
-                        if isinstance(output, list) and output:
-                            for part in output:
-                                if isinstance(part, dict):
-                                    t = part.get("text") or part.get("content")
-                                    if t:
-                                        out_text = t
-                                        break
+                        content = (data.get("output") or {}).get("content") or data.get("content") or []
+                        parts = []
+                        for part in content:
+                            if isinstance(part, dict):
+                                if part.get("type") == "output_text" and isinstance(part.get("text"), str):
+                                    parts.append(part.get("text"))
+                                elif isinstance(part.get("text"), str):
+                                    parts.append(part.get("text"))
+                                elif isinstance(part.get("content"), list):
+                                    for sub in part.get("content"):
+                                        if isinstance(sub, dict) and sub.get("type") == "text" and isinstance(sub.get("text"), str):
+                                            parts.append(sub.get("text"))
+                        out_text = "\n".join([p for p in parts if p]) if parts else None
+                    except Exception:
+                        out_text = None
+                if DEBUG_GUIDEON and not out_text:
+                    try:
+                        print("[GUIDEON][openai][responses] WARN: empty output_text. raw=", (json.dumps(data)[:500] if data else "<none>"))
                     except Exception:
                         pass
-                if isinstance(out_text, str):
+                if out_text and isinstance(out_text, str):
                     return out_text.strip() or None
                 # If could not parse, fallback to chat-completions
                 use_responses = False
@@ -1416,21 +1425,28 @@ def _openai_messages(system_text: str, user_text: str) -> Optional[str]:
         if DEBUG_GUIDEON:
             print("[GUIDEON][openai][chat] model=", cc_model, " temp=", payload.get("temperature"), " max_t=", payload.get("max_tokens"))
             print("[GUIDEON][openai][chat] system size=", len(system_text or ""), " user size=", len(user_text or ""))
-        resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
+        resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
         if resp.status_code >= 400:
             print(f"[GUIDEON][openai][chat] HTTP {resp.status_code}: {resp.text[:300]} ...")
             return None
         data = resp.json() or {}
         if DEBUG_GUIDEON:
             print("[GUIDEON][openai][chat] keys:", list(data.keys()))
-        choice = (data.get("choices") or [{}])[0]
-        msg = (choice.get("message") or {}).get("content")
-        if isinstance(msg, str):
-            return msg.strip() or None
-        if isinstance(msg, list):
-            parts = [p.get("text", "") if isinstance(p, dict) else str(p) for p in msg]
-            out = "\n".join([t for t in parts if t])
-            return out.strip() or None
+        out_text = None
+        try:
+            choices = data.get("choices") or []
+            if choices:
+                msg = (choices[0] or {}).get("message") or {}
+                out_text = msg.get("content")
+        except Exception:
+            out_text = None
+        if DEBUG_GUIDEON and not out_text:
+            try:
+                print("[GUIDEON][openai][chat] WARN: empty content. raw=", (json.dumps(data)[:500] if data else "<none>"))
+            except Exception:
+                pass
+        if out_text and isinstance(out_text, str):
+            return out_text.strip() or None
         return None
 
     except Exception as e:
