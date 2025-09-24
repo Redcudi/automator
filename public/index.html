@@ -10,6 +10,15 @@
   <link rel="stylesheet" href="/public/styles.css" />
   <!-- If you embed in WordPress, uncomment and set your Railway backend URL -->
   <!-- pre<script>window.CREATORHOOP_API = 'https://automator-production-82f2.up.railway.app';</script> -->
+  <style>
+    /* Embed/WordPress helpers */
+    body.embed { background: transparent; }
+    body.embed .bg { display: none !important; }
+    body.embed .container { max-width: 100%; padding: 16px; }
+    body.embed .panel.glass, body.embed .results.glass { box-shadow: none; }
+    /* Avoid inner scrolling when embedded */
+    html.embed, body.embed { height: auto !important; overflow: visible !important; }
+  </style>
 </head>
 <body>
   <div class="bg"></div>
@@ -150,6 +159,32 @@
   </article>
 </template>
   <script src="/public/app.js"></script>
+  <script>
+    (function(){
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('embed') === '1') {
+        document.documentElement.classList.add('embed');
+        document.body.classList.add('embed');
+      }
+      function postResize(){
+        try {
+          const h = Math.max(
+            document.body.scrollHeight,
+            document.documentElement.scrollHeight
+          );
+          parent.postMessage({ type: 'resize-iframe', height: h }, '*');
+        } catch(e){}
+      }
+      // Post on load and on layout changes
+      window.addEventListener('load', postResize);
+      window.addEventListener('resize', postResize);
+      // Observe mutations to update height as content grows (e.g., new cards)
+      try {
+        new ResizeObserver(postResize).observe(document.body);
+        new MutationObserver(postResize).observe(document.body, { childList: true, subtree: true });
+      } catch(e){}
+    })();
+  </script>
   <!-- Consentimiento legal -->
 
 </body>
